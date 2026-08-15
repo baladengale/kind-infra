@@ -1,0 +1,24 @@
+# kind-infra wrapper defaults for kagent — layered on top of the chart in
+# BOTH deploy modes (upstream OCI chart and local ../kagent checkout).
+#
+# Keep the built-in cluster-ops agents off for a lean local dev cluster
+# (they spawn extra app pods that are rarely used locally).
+cilium-debug-agent:
+  enabled: false
+cilium-manager-agent:
+  enabled: false
+cilium-policy-agent:
+  enabled: false
+observability-agent:
+  enabled: false
+promql-agent:
+  enabled: false
+
+# Model provider configuration - DeepSeek via Anthropic-compatible API
+providers:
+  anthropic:
+    # DeepSeek model - using their Claude-compatible API
+    model: deepseek-chat
+    config:
+      # DeepSeek Anthropic-compatible API endpoint
+      baseUrl: https://api.deepseek.com/anthropic

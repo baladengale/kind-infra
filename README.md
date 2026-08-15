@@ -159,6 +159,10 @@ scripts/
   50-registry.sh          port-free registry route + containerd bypass
   60-register.sh          hostname registration (expose / remove / sync)
   70-test.sh              chainsaw runner behind `make test`
+  80-kagent.sh            kagent deployment wrapper (see below)
+kagent/                   wrapper defaults for deploying ../kagent
+  values.yaml             customization defaults (agents off, etc.)
+  env.example             template for the gitignored .env (API keys)
 tests/                    chainsaw e2e tests (see below)
 certs/                    mkcert CA + wildcard key (gitignored)
 ```
@@ -166,6 +170,57 @@ certs/                    mkcert CA + wildcard key (gitignored)
 Everything applied to the cluster lives in `manifests/` as plain YAML;
 the scripts only render `${VAR}` placeholders (`DOMAIN`, gateway names,
 registry IP, ...) and pipe the result into `kubectl apply`.
+
+## Deploying kagent (wrapper)
+
+The kagent code lives in `../kagent`; this repo only holds the deployment
+wrapper (`scripts/80-kagent.sh` + `kagent/values.yaml`) with our
+customization defaults baked in. Both modes serve images from the local
+registry and expose the UI at **https://kagent.internal** (no port-forward).
+
+**Prerequisite — API key** (wrapper default: Anthropic provider):
+
+```bash
+cp kagent/env.example .env   # gitignored
+# edit .env: ANTHROPIC_API_KEY=... (optional: KAGENT_MODEL, KAGENT_BASE_URL
+# for an Anthropic-compatible endpoint like DeepSeek)
+```
+
+**Option 1 — upstream release, no local build:**
+
+```bash
+make kagent-deploy                       # default: 0.10.0-rc2
+make kagent-deploy KAGENT_VERSION=0.7.9  # any published release
+```
+
+Pulls the published kagent images and the helm chart from ghcr, mirrors the
+images into `kind-registry.internal` (cached — the cluster never pulls from
+ghcr again, re-runs are fast), and installs the chart pointed at the local
+registry. Everything tunable — release version, image list, dependency
+versions, chart location — lives in one block at the top of
+`scripts/80-kagent.sh` (mirrored: core images, the `-full` variants,
+`kagent-adk`, plus tools/kmcp/querydoc/grafana-mcp with their own tags).
+
+**Option 2 — build + deploy the `../kagent` checkout:**
+
+```bash
+make kagent-build-deploy
+```
+
+Builds the component images via the kagent Makefile (buildx pushes to
+`localhost:5001`, which is the same registry container), then installs the
+**local chart** from the checkout with `registry=kind-registry.internal`
+and the tag from `git describe`. Includes the dev customizations from the
+old kagent Makefile flow (pgvector bundled DB, disabled cluster-ops agents).
+
+**Teardown / re-deploy:** both deploy targets are idempotent `helm
+upgrade --install` — re-run to pick up changes. `make kagent-delete`
+uninstalls both releases and removes the `kagent.internal` route (mirrored
+images stay cached in the registry).
+
+Customization defaults (kept here, upstream stays clean) live in
+`kagent/values.yaml` — the built-in cluster-ops agents (cilium×3,
+observability, promql) are disabled for a lean local cluster.
 
 ## End-to-end tests (chainsaw)
 

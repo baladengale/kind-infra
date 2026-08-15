@@ -16,9 +16,11 @@ KIND_CLUSTER_NAME   ?= kind
 KIND_IMAGE_VERSION  ?= 1.35.0
 GWAPI_VERSION       ?= 1.6.0
 AGW_VERSION         ?= 0.0.0-latest-dev
+KAGENT_VERSION      ?=
 CONTAINER_RUNTIME   ?= $(shell command -v podman >/dev/null 2>&1 && echo podman || echo docker)
 
 export DOMAIN KIND_CLUSTER_NAME KIND_IMAGE_VERSION GWAPI_VERSION AGW_VERSION CONTAINER_RUNTIME
+export KAGENT_VERSION
 
 KUBE_CONTEXT := kind-$(KIND_CLUSTER_NAME)
 HOST ?=
@@ -28,7 +30,8 @@ PORT ?=
 
 .DEFAULT_GOAL := help
 .PHONY: help create update upgrade delete delete-cluster dns-install dns-remove \
-        expose unexpose sync test status kubectl-tools
+        expose unexpose sync test kagent-deploy kagent-build-deploy kagent-delete \
+        status kubectl-tools kagent-mcp-test
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -87,6 +90,15 @@ sync: ## Sync annotated Services (kind-infra.dev/host) to HTTPS hostnames (+ pru
 test: ## Run chainsaw e2e tests against the running cluster
 	@bash scripts/70-test.sh
 
+kagent-deploy: ## Deploy upstream kagent: mirror images to local registry + helm install (MCP included)
+	@bash scripts/80-kagent.sh deploy
+
+kagent-build-deploy: ## Build ../kagent, push to local registry, deploy the local chart (MCP included)
+	@bash scripts/80-kagent.sh build-deploy
+
+kagent-delete: ## Uninstall kagent and remove the kagent.$(DOMAIN) route
+	@bash scripts/80-kagent.sh delete
+
 status: ## Show clusters, addons, registry and DNS state
 	@echo "== clusters =="; kind get clusters 2>/dev/null || echo "(none)"
 	@echo "== nodes =="; \
@@ -104,3 +116,6 @@ status: ## Show clusters, addons, registry and DNS state
 
 kubectl-tools: ## Install kubectl plugins (kubecolor, kctx, kns)
 	@bash scripts/kubectl-tools.sh
+
+kagent-mcp-test: ## Test MCP endpoint availability and functionality (https://kagent.$(DOMAIN)/mcp)
+	@bash scripts/test-mcp.sh

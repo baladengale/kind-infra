@@ -1,0 +1,149 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: kagent-mcp-gateway
+spec:
+  description: >-
+    End-to-end MCP server validation: HTTPRoute creation, gateway routing,
+    MCP endpoint availability, and tool invocation (list_agents, invoke_agent)
+  steps:
+    - name: verify-kagent-running
+      description: Ensure kagent controller is deployed and ready
+      try:
+        - script:
+            content: |
+                kubectl get pods -n kagent -l app.kubernetes.io/component=controller
+                kubectl wait --for=condition=Ready pod -n kagent -l app.kubernetes.io/component=controller --timeout=60s
+
+    - name: verify-existing-kagent-route
+      description: Verify existing kagent HTTPRoute includes MCP routing
+      try:
+        - assert:
+            resource:
+              apiVersion: gateway.networking.k8s.io/v1
+              kind: HTTPRoute
+              metadata:
+                namespace: kagent
+                name: kagent
+          resource:
+            jsonPath:
+              path: $.spec.rules[1].matches[0].path.value
+              value: /mcp
+          resource:
+            jsonPath:
+              path: $.spec.rules[1].backendRefs[0].name
+              value: kagent-controller
+
+    - name: create-test-agent
+      description: Deploy test agent for MCP invocation
+      try:
+        - apply:
+            file: mcp-validation/agent-test.yaml
+        - assert:
+            resource:
+              apiVersion: v1alpha3
+              kind: Agent
+              metadata:
+                namespace: kagent
+                name: test-mcp-agent
+
+    - name: verify-mcp-endpoint-availability
+      description: Test MCP endpoint responds correctly
+      try:
+        - script:
+            content: |
+                for _ in $(seq 1 30); do
+                  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+                    --cacert "${REPO_ROOT}/certs/rootCA.pem" \
+                    "https://kagent.${DOMAIN}/mcp" || true)"
+                  [ "$code" = "200" ] || [ "$code" = "405" ] && exit 0
+                  sleep 2
+                done
+                echo "MCP endpoint at https://kagent.${DOMAIN}/mcp not available (last: ${code})"
+                exit 1
+
+    - name: test-list-agents-tool
+      description: Validate list_agents MCP tool availability
+      try:
+        - script:
+            content: |
+                # Test MCP tools/list_agents endpoint
+                response=$(curl -s --cacert "${REPO_ROOT}/certs/rootCA.pem" \
+                  -X POST "https://kagent.${DOMAIN}/mcp" \
+                  -H "Content-Type: application/json" \
+                  -d '{
+                    "jsonrpc": "2.0",
+                    "method": "tools/list",
+                    "id": 1
+                  }')
+
+                echo "MCP Tools Response: $response"
+
+                # Validate response contains list_agents
+                if echo "$response" | jq -e '.result.tools[]? | select(.name == "list_agents")' > /dev/null; then
+                  echo "✅ list_agents tool available"
+                  exit 0
+                else
+                  echo "❌ list_agents tool not found"
+                  exit 1
+                fi
+
+    - name: test-invoke-agent-tool
+      description: Validate invoke_agent MCP tool availability
+      try:
+        - script:
+            content: |
+                # Test invoke_agent tool exists
+                response=$(curl -s --cacert "${REPO_ROOT}/certs/rootCA.pem" \
+                  -X POST "https://kagent.${DOMAIN}/mcp" \
+                  -H "Content-Type: application/json" \
+                  -d '{
+                    "jsonrpc": "2.0",
+                    "method": "tools/list",
+                    "id": 2
+                  }')
+
+                if echo "$response" | jq -e '.result.tools[]? | select(.name == "invoke_agent")' > /dev/null; then
+                  echo "✅ invoke_agent tool available"
+                  exit 0
+                else
+                  echo "❌ invoke_agent tool not found"
+                  exit 1
+                fi
+
+    - name: test-mcp-agent-discovery
+      description: Test list_agents returns our test agent
+      try:
+        - script:
+            content: |
+                # Call list_agents tool
+                response=$(curl -s --cacert "${REPO_ROOT}/certs/rootCA.pem" \
+                  -X POST "https://kagent.${DOMAIN}/mcp" \
+                  -H "Content-Type: application/json" \
+                  -d '{
+                    "jsonrpc": "2.0",
+                    "method": "tools/call",
+                    "id": 3,
+                    "params": {
+                      "name": "list_agents",
+                      "arguments": {}
+                    }
+                  }')
+
+                echo "list_agents response: $response"
+
+                # Validate test-mcp-agent is in response
+                if echo "$response" | jq -e '.result.content[]? | select(.text | contains("test-mcp-agent"))' > /dev/null; then
+                  echo "✅ test-mcp-agent discovered via MCP"
+                  exit 0
+                else
+                  echo "❌ test-mcp-agent not found in list_agents"
+                  exit 1
+                fi
+
+    - name: cleanup-test-resources
+      description: Remove test agent (kagent route managed by deployment)
+      try:
+        - script:
+            content: |
+                kubectl delete -n kagent agent test-mcp-agent --ignore-not-found

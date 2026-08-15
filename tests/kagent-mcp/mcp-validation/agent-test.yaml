@@ -1,0 +1,12 @@
+apiVersion: v1alpha3
+kind: Agent
+metadata:
+  name: test-mcp-agent
+  namespace: kagent
+spec:
+  description: "Test agent for MCP validation"
+  instructions: "You are a helpful test agent. Respond with 'MCP test successful' when asked."
+  tools:
+    - type: builtin
+      name: weather
+      description: "Get weather information"
