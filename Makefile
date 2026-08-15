@@ -9,7 +9,7 @@
 # Override any variable on the command line, e.g.:
 #   make create DOMAIN=acme.test KIND_IMAGE_VERSION=1.36.0
 
-DOMAIN              ?= local.test
+DOMAIN              ?= test
 KIND_CLUSTER_NAME   ?= kind
 KIND_IMAGE_VERSION  ?= 1.35.0
 METALLB_VERSION     ?= v0.15.3
@@ -19,9 +19,14 @@ CONTAINER_RUNTIME   ?= $(shell command -v podman >/dev/null 2>&1 && echo podman 
 export DOMAIN KIND_CLUSTER_NAME KIND_IMAGE_VERSION METALLB_VERSION INGRESS_NGINX_REF CONTAINER_RUNTIME
 
 KUBE_CONTEXT := kind-$(KIND_CLUSTER_NAME)
+HOST ?=
+NS   ?= default
+SVC  ?=
+PORT ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help create update upgrade delete delete-cluster dns-install dns-remove status
+.PHONY: help create update upgrade delete delete-cluster dns-install dns-remove \
+        expose unexpose sync status
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -65,6 +70,19 @@ dns-install: ## Install/refresh the local DNS zone (*.$(DOMAIN))
 
 dns-remove: ## Remove the local DNS zone (*.$(DOMAIN))
 	@bash scripts/41-dns-remove.sh
+
+expose: ## Route HOST.$(DOMAIN) to a Service: make expose HOST=x NS=y SVC=z PORT=n
+	@if [ -z "$(HOST)" ] || [ -z "$(SVC)" ]; then \
+		echo "usage: make expose HOST=kagent NS=kagent SVC=kagent-ui PORT=8080"; exit 2; fi
+	@bash scripts/50-register.sh expose "$(HOST)" "$(NS)" "$(SVC)" "$(PORT)"
+
+unexpose: ## Remove a registration: make unexpose HOST=kagent
+	@if [ -z "$(HOST)" ]; then \
+		echo "usage: make unexpose HOST=kagent"; exit 2; fi
+	@bash scripts/50-register.sh remove "$(HOST)"
+
+sync: ## Sync annotated Services (kind-infra.dev/host) to Ingress hostnames (+ prune)
+	@bash scripts/50-register.sh sync
 
 status: ## Show clusters, addons, registry and DNS state
 	@echo "== clusters =="; kind get clusters 2>/dev/null || echo "(none)"

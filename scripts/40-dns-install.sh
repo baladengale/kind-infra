@@ -11,6 +11,20 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 require brew dig
 [[ "$(uname -s)" == "Darwin" ]] || die "macOS-only (uses Homebrew dnsmasq + /etc/resolver)."
 
+DOMAIN="${DOMAIN#.}"   # tolerate a leading dot
+case "$DOMAIN" in
+  test) ;;
+  local)
+    die "'.local' is reserved for Bonjour/mDNS on macOS — those queries never reliably reach dnsmasq via /etc/resolver. Use the default 'test' (same-length names: kagent.test) or another suffix like 'dev.test'."
+    ;;
+  localhost)
+    warn "'.localhost' may be short-circuited to 127.0.0.1 by some apps; 'test' is the safe default."
+    ;;
+  *)
+    warn "Using custom zone '${DOMAIN}' — make sure it does not collide with real domains."
+    ;;
+esac
+
 BREW_PREFIX="$(brew --prefix)"
 DNSMASQ_CONF="${BREW_PREFIX}/etc/dnsmasq.conf"
 DNSMASQ_D="${BREW_PREFIX}/etc/dnsmasq.d"
