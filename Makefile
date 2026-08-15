@@ -32,10 +32,9 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-create: ## Create everything: cluster, registry, AgentGateway, DNS
+create: ## Create everything: cluster, registry, AgentGateway
 	@bash scripts/10-create-cluster.sh
 	@bash scripts/30-gateway.sh
-	@bash scripts/40-dns-install.sh
 	@bash scripts/50-registry.sh
 	@echo ""
 	@echo "Base infra ready. Register any app with:"
@@ -45,7 +44,6 @@ create: ## Create everything: cluster, registry, AgentGateway, DNS
 update: ## Re-apply addons on the existing cluster (picks up version bumps)
 	@bash scripts/30-gateway.sh
 	@bash scripts/50-registry.sh
-	@bash scripts/40-dns-install.sh
 	@echo "Update complete."
 
 upgrade: ## Recreate the cluster with the current KIND_IMAGE_VERSION (destructive)
@@ -54,8 +52,7 @@ upgrade: ## Recreate the cluster with the current KIND_IMAGE_VERSION (destructiv
 	@$(MAKE) --no-print-directory delete
 	@$(MAKE) --no-print-directory create
 
-delete: ## Remove DNS entries, delete the cluster and the registry
-	@bash scripts/41-dns-remove.sh
+delete: ## Remove entries, delete the cluster and the registry
 	@$(MAKE) --no-print-directory delete-cluster
 	@if [ "$$($(CONTAINER_RUNTIME) ps -aq --filter name=^kind-registry$$)" != "" ]; then \
 		echo "Removing kind-registry container..."; \
@@ -63,7 +60,7 @@ delete: ## Remove DNS entries, delete the cluster and the registry
 	fi
 	@echo "Teardown complete."
 
-delete-cluster: ## Delete only the kind cluster (DNS and registry untouched)
+delete-cluster: ## Delete only the kind cluster (registry untouched)
 	@kind delete cluster --name $(KIND_CLUSTER_NAME)
 
 dns-install: ## Install/refresh the local DNS zone (*.$(DOMAIN))
