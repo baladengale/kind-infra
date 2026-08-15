@@ -11,8 +11,11 @@ Local Kubernetes base infrastructure, managed with make:
 Hostnames are short: `kagent.test`, `kind-registry.test`, `myapp.test`.
 
 > Why not `*.local`? macOS reserves `.local` for Bonjour/mDNS — those queries
-> never reliably reach dnsmasq via `/etc/resolver`. `.test` is RFC
-> 6761-reserved for exactly this purpose and the DNS script enforces it.
+> never reliably reach dnsmasq via `/etc/resolver`. This applies to **any
+> suffix ending in `.local`** (`test.local` too); the DNS script refuses them.
+> `.test` is RFC 6761-reserved for exactly this purpose. If you prefer a
+> longer, local-flavored suffix, use the words in the safe order:
+> `make create DOMAIN=local.test` → `kagent.local.test`.
 
 ## Quickstart
 
