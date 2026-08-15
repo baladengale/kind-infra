@@ -8,10 +8,11 @@
 
 KIND_CLUSTER_NAME=${KIND_CLUSTER_NAME:-kind}
 KIND_IMAGE_VERSION=${KIND_IMAGE_VERSION:-1.35.0}
-# Hostnames look like <name>.$DOMAIN — e.g. kagent.test, kind-registry.test.
-# ".test" is RFC 6761-reserved for local use. Do NOT use "local": macOS
-# reserves it for Bonjour/mDNS and unicast DNS (/etc/resolver) is unreliable.
-DOMAIN=${DOMAIN:-test}
+# Hostnames look like <name>.$DOMAIN — e.g. kagent.internal, kind-registry.internal.
+# ".internal" is not formally reserved but has never been delegated as a real
+# TLD, so it is collision-free in practice. Do NOT use "local": macOS reserves
+# it for Bonjour/mDNS and unicast DNS (/etc/resolver) is unreliable.
+DOMAIN=${DOMAIN:-internal}
 METALLB_VERSION=${METALLB_VERSION:-v0.15.3}
 INGRESS_NGINX_REF=${INGRESS_NGINX_REF:-main}
 CONTAINER_RUNTIME=${CONTAINER_RUNTIME:-$(command -v podman >/dev/null 2>&1 && echo podman || echo docker)}

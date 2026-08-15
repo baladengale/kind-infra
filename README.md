@@ -8,14 +8,14 @@ Local Kubernetes base infrastructure, managed with make:
 - **ingress-nginx** — routes `http://<name>.<domain>` to services by Host header
 - **local DNS** (dnsmasq + macOS resolver) — `*.<domain>` resolves to 127.0.0.1
 
-Hostnames are short: `kagent.test`, `kind-registry.test`, `myapp.test`.
+Hostnames are short: `kagent.internal`, `kind-registry.internal`, `myapp.internal`.
 
 > Why not `*.local`? macOS reserves `.local` for Bonjour/mDNS — those queries
 > never reliably reach dnsmasq via `/etc/resolver`. This applies to **any
 > suffix ending in `.local`** (`test.local` too); the DNS script refuses them.
-> `.test` is RFC 6761-reserved for exactly this purpose. If you prefer a
-> longer, local-flavored suffix, use the words in the safe order:
-> `make create DOMAIN=local.test` → `kagent.local.test`.
+> The default `.internal` isn't formally RFC-reserved, but it has never been
+> delegated as a real TLD, so it's collision-free in practice. If you want a
+> fully reserved suffix, use `test` (`kagent.internal`) or `home.arpa`.
 
 ## Quickstart
 
@@ -28,11 +28,11 @@ make status     # verify each layer
 
 Two mechanisms — both end at a k8s Service, never a `kubectl port-forward`:
 
-**1. Wildcard DNS (zero registration).** Everything under `*.test` resolves to
+**1. Wildcard DNS (zero registration).** Everything under `*.internal` resolves to
 127.0.0.1, so any port already published on the host works by name:
 
 ```bash
-docker push kind-registry.test:5001/myimage:tag   # hits the local registry
+docker push kind-registry.internal:5001/myimage:tag   # hits the local registry
 ```
 
 **2. Register a hostname → Service (routed through ingress on :80).**
@@ -42,7 +42,7 @@ Annotate the Service and sync:
 kubectl -n kagent annotate svc kagent-ui \
   kind-infra.dev/host=kagent kind-infra.dev/port=8080
 make sync     # creates the Ingress; also prunes stale registrations
-# -> http://kagent.test
+# -> http://kagent.internal
 ```
 
 Or do it directly without touching the Service:
@@ -77,7 +77,7 @@ ingress-nginx's `tcp-services` ConfigMap.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DOMAIN` | `test` | DNS zone managed by dnsmasq |
+| `DOMAIN` | `internal` | DNS zone managed by dnsmasq |
 | `KIND_CLUSTER_NAME` | `kind` | Cluster name (context: `kind-kind`) |
 | `KIND_IMAGE_VERSION` | `1.35.0` | `kindest/node` version — bump + `make upgrade` |
 | `METALLB_VERSION` | `v0.15.3` | MetalLB manifest version |
@@ -102,8 +102,8 @@ this repo's kind config (host ports 80/443 + `ingress-ready` label).
 ## How it fits together
 
 ```
-http://kagent.test
-  │  1. macOS routes *.test to dnsmasq (/etc/resolver/test)
+http://kagent.internal
+  │  1. macOS routes *.internal to dnsmasq (/etc/resolver/internal)
   │  2. dnsmasq answers 127.0.0.1
   ▼
 127.0.0.1:80  (kind extraPortMappings)
@@ -136,8 +136,8 @@ scripts/50-register.sh         hostname registration (expose / remove / sync)
 ## Debugging (layer by layer)
 
 ```bash
-dig anything.test @127.0.0.1                    # 1. dnsmasq -> 127.0.0.1?
-curl -H "Host: kagent.test" http://127.0.0.1    # 2. ingress routing?
+dig anything.internal @127.0.0.1                # 1. dnsmasq -> 127.0.0.1?
+curl -H "Host: kagent.internal" http://127.0.0.1    # 2. ingress routing?
 kubectl get ingress -A -l app.kubernetes.io/managed-by=kind-infra
 make status                                      # everything at a glance
 ```

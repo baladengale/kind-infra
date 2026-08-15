@@ -13,9 +13,9 @@ require brew dig
 
 DOMAIN="${DOMAIN#.}"   # tolerate a leading dot
 case "$DOMAIN" in
-  test) ;;
+  test|internal) ;;
   local|*.local)
-    die "'${DOMAIN}' ends in '.local', which macOS claims for Bonjour/mDNS — lookups stall or never reach dnsmasq via /etc/resolver. Prefer the default 'test', or the same words in the safe order: DOMAIN=local.test (kagent.local.test)."
+    die "'${DOMAIN}' ends in '.local', which macOS claims for Bonjour/mDNS — lookups stall or never reach dnsmasq via /etc/resolver. Prefer the default 'internal', or a fully reserved suffix like 'test' (kagent.test)."
     ;;
   localhost)
     warn "'.localhost' may be short-circuited to 127.0.0.1 by some apps; 'test' is the safe default."

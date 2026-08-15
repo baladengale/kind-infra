@@ -9,7 +9,7 @@
 # Override any variable on the command line, e.g.:
 #   make create DOMAIN=acme.test KIND_IMAGE_VERSION=1.36.0
 
-DOMAIN              ?= test
+DOMAIN              ?= internal
 KIND_CLUSTER_NAME   ?= kind
 KIND_IMAGE_VERSION  ?= 1.35.0
 METALLB_VERSION     ?= v0.15.3

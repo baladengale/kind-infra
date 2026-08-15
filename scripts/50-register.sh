@@ -12,7 +12,7 @@
 #          kind-infra.dev/host=kagent kind-infra.dev/port=8080
 #        make sync
 #
-#      -> http://kagent.test serves kagent-ui:8080.
+#      -> http://kagent.internal serves kagent-ui:8080.
 #      Port defaults to the Service's first port when the annotation is absent.
 #      `make sync` also prunes registrations whose Service lost the annotation.
 #
@@ -22,7 +22,7 @@
 #        make unexpose HOST=kagent
 #
 # Hostnames are relative to $DOMAIN (default: test), i.e. HOST=kagent
-# becomes kagent.test. DNS itself is a wildcard, so the hostname resolves
+# becomes kagent.internal. DNS itself is a wildcard, so the hostname resolves
 # the moment the Ingress exists.
 #
 set -euo pipefail
