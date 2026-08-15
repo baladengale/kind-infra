@@ -1,9 +1,11 @@
 # kind-infra — local Kubernetes base infrastructure via make
 #
-#   make create    cluster + local registry + AgentGateway + DNS
+#   make create    cluster + local registry + AgentGateway + registry route
+#   make dns-install  one-time machine setup: *.internal -> 127.0.0.1 (sudo)
 #   make update    re-apply addons on the existing cluster (idempotent)
 #   make upgrade   recreate the cluster with a newer Kubernetes version
-#   make delete    remove DNS entries, cluster and registry
+#   make delete    remove the cluster and the registry (DNS stays)
+#   make test      chainsaw e2e tests against the running cluster
 #   make status    show what is running and whether DNS works
 #
 # Override any variable on the command line, e.g.:
@@ -26,13 +28,13 @@ PORT ?=
 
 .DEFAULT_GOAL := help
 .PHONY: help create update upgrade delete delete-cluster dns-install dns-remove \
-        expose unexpose sync status kubectl-tools
+        expose unexpose sync test status kubectl-tools
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-create: ## Create everything: cluster, registry, AgentGateway
+create: ## Create everything: cluster, registry, AgentGateway, registry route
 	@bash scripts/10-create-cluster.sh
 	@bash scripts/30-gateway.sh
 	@bash scripts/50-registry.sh
@@ -52,7 +54,7 @@ upgrade: ## Recreate the cluster with the current KIND_IMAGE_VERSION (destructiv
 	@$(MAKE) --no-print-directory delete
 	@$(MAKE) --no-print-directory create
 
-delete: ## Remove entries, delete the cluster and the registry
+delete: ## Delete the cluster and the registry (DNS stays — see dns-remove)
 	@$(MAKE) --no-print-directory delete-cluster
 	@if [ "$$($(CONTAINER_RUNTIME) ps -aq --filter name=^kind-registry$$)" != "" ]; then \
 		echo "Removing kind-registry container..."; \
@@ -63,10 +65,10 @@ delete: ## Remove entries, delete the cluster and the registry
 delete-cluster: ## Delete only the kind cluster (registry untouched)
 	@kind delete cluster --name $(KIND_CLUSTER_NAME)
 
-dns-install: ## Install/refresh the local DNS zone (*.$(DOMAIN))
+dns-install: ## One-time: install the local DNS zone (*.$(DOMAIN)) for this machine
 	@bash scripts/40-dns-install.sh
 
-dns-remove: ## Remove the local DNS zone (*.$(DOMAIN))
+dns-remove: ## Remove the local DNS zone (*.$(DOMAIN)) from this machine
 	@bash scripts/41-dns-remove.sh
 
 expose: ## Route HOST.$(DOMAIN) to a Service: make expose HOST=x NS=y SVC=z PORT=n
@@ -81,6 +83,9 @@ unexpose: ## Remove a registration: make unexpose HOST=kagent
 
 sync: ## Sync annotated Services (kind-infra.dev/host) to HTTPS hostnames (+ prune)
 	@bash scripts/60-register.sh sync
+
+test: ## Run chainsaw e2e tests against the running cluster
+	@bash scripts/70-test.sh
 
 status: ## Show clusters, addons, registry and DNS state
 	@echo "== clusters =="; kind get clusters 2>/dev/null || echo "(none)"

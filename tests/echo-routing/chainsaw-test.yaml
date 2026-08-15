@@ -1,0 +1,83 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: echo-routing
+spec:
+  description: >-
+    End-to-end hostname registration: `make expose` creates the HTTPRoute,
+    the gateway cert is refreshed with an explicit SAN, and https://echo.<DOMAIN>
+    serves the app over TLS on 443. `make unexpose` removes the route again.
+  steps:
+  - name: seed-echo-image-into-local-registry
+    description: >-
+      Push the test image through kind-registry.<DOMAIN> over TLS on 443 —
+      the same flow users rely on (`docker push kind-registry.internal/img`).
+    try:
+    - script:
+        content: |
+          img="kind-registry.${DOMAIN}/http-echo:1.0.0"
+          if ! curl -s -o /dev/null --max-time 5 \
+              --cacert "${REPO_ROOT}/certs/rootCA.pem" \
+              "https://kind-registry.${DOMAIN}/v2/http-echo/manifests/1.0.0"; then
+            echo "registry not reachable" >&2; exit 1
+          fi
+          if ! curl -sf -o /dev/null --max-time 5 \
+              --cacert "${REPO_ROOT}/certs/rootCA.pem" \
+              "https://kind-registry.${DOMAIN}/v2/http-echo/manifests/1.0.0"; then
+            ${CONTAINER_RUNTIME} pull hashicorp/http-echo:1.0.0 >/dev/null
+            ${CONTAINER_RUNTIME} tag hashicorp/http-echo:1.0.0 "$img"
+            ${CONTAINER_RUNTIME} push "$img" >/dev/null
+          fi
+  - name: deploy-echo-app
+    try:
+    - apply:
+        file: echo-app.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            namespace: default
+            name: echo
+          status:
+            availableReplicas: 1
+  - name: expose-echo-internal
+    try:
+    - script:
+        content: make -C "$REPO_ROOT" expose HOST=echo NS=default SVC=echo PORT=8080
+    # HTTPRoute conditions live under status.parents[].conditions, which
+    # `kubectl wait` cannot see — poll them directly.
+    - script:
+        content: |
+          for _ in $(seq 1 30); do
+            st="$(kubectl -n default get httproute echo -o json \
+              | jq -r '.status.parents[]?.conditions[]?
+                  | select(.type == "Accepted" and .status == "True") | .status' | head -1)"
+            [ "$st" = "True" ] && exit 0
+            sleep 2
+          done
+          echo "httproute echo never became Accepted"; exit 1
+  - name: https-echo-internal-returns-200
+    try:
+    - script:
+        content: |
+          for _ in $(seq 1 30); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+              --cacert "${REPO_ROOT}/certs/rootCA.pem" \
+              "https://echo.${DOMAIN}" || true)"
+            [ "$code" = "200" ] && exit 0
+            sleep 2
+          done
+          echo "https://echo.${DOMAIN} never returned 200 (last: ${code})"
+          exit 1
+  - name: unexpose-removes-the-route
+    try:
+    - script:
+        content: make -C "$REPO_ROOT" unexpose HOST=echo
+    - error:
+        resource:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            namespace: default
+            name: echo

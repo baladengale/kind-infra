@@ -1,51 +1,33 @@
-# Shell aliases for kubectl tools
+# Shell aliases for kubectl tools (see scripts/kubectl-tools.sh).
 # Source this file in your ~/.zshrc or ~/.bashrc:
 #   source /path/to/kind/shell-aliases.sh
 
-# kubectl colorized output
+# kubectl (colorized when kubecolor is installed)
 if command -v kubecolor >/dev/null 2>&1; then
-  alias k='kubecolor'
-  alias kg='kubecolor get'
-  alias kd='kubecolor describe'
-  alias kapply='kubecolor apply'
-  alias kdelete='kubecolor delete'
-  alias klogs='kubecolor logs'
-  alias kexec='kubecolor exec'
+  K=kubecolor
 else
-  alias k='kubectl'
-  alias kg='kubectl get'
-  alias kd='kubectl describe'
-  alias kapply='kubectl apply'
-  alias kdelete='kubectl delete'
-  alias klogs='kubectl logs'
-  alias kexec='kubectl exec'
+  K=kubectl
 fi
+alias k="$K"
+alias kg="$K get"
+alias kd="$K describe"
+alias kapply="$K apply"
+alias kdelete="$K delete"
+alias klogs="$K logs"
+alias kexec="$K exec"
 
-# krew plugins
+# krew plugins (installed via scripts/kubectl-tools.sh)
 export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"
-
-# Short aliases for common kubectl commands
 alias kctx='kubectl ctx'    # switch clusters
 alias kns='kubectl ns'      # switch namespaces
-alias kp='kubectl pods'     # list pods (if you have the pods plugin)
-alias ksys='kubectl --namespace=kube-system'
 
-# Quick aliases for this kind cluster
+# Shortcuts for common commands and this repo's cluster
+alias kall="$K get all"
+alias kpo="$K get pods"
+alias ksv="$K get svc"
+alias knd="$K get nodes"
+alias kdep="$K get deployments"
 alias kkind="kubectl --context kind-kind"
-alias kprod="kubectl --context kind-kind --namespace production"
-alias kdev="kubectl --context kind-kind --namespace development"
+alias kgw="kubectl --context kind-kind -n agentgateway-system"
 
-# Common workflow aliases
-alias kall='kubectl get all'
-alias kpo='kubectl get pods'
-alias ksv='kubectl get svc'
-alias knd='kubectl get nodes'
-alias kns='kubectl get namespaces'
-alias kdep='kubectl get deployments'
-
-# Namespace shortcuts
-alias k_default='kubectl --namespace=default'
-alias k_kube_sys='kubectl --namespace=kube-system'
-alias k_agent_gateway='kubectl --namespace=agentgateway-system'
-
-echo "✅ kubectl aliases loaded (k, kg, kd, kctx, kns, etc.)"
+echo "kubectl aliases loaded (k, kg, kd, kctx, kns, kkind, kgw, ...)"

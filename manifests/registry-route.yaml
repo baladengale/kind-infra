@@ -1,0 +1,19 @@
+# Port-free registry access: https://kind-registry.${DOMAIN} through the
+# Gateway on 443 (scripts/50-registry.sh).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: kind-registry
+  namespace: default
+  labels:
+    app.kubernetes.io/managed-by: kind-infra
+spec:
+  parentRefs:
+  - name: ${GW_NAME}
+    namespace: ${GW_NS}
+  hostnames:
+  - kind-registry.${DOMAIN}
+  rules:
+  - backendRefs:
+    - name: kind-registry
+      port: 5000

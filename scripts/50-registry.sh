@@ -20,13 +20,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 require kubectl "$CONTAINER_RUNTIME"
 cluster_exists || die "Cluster '${KIND_CLUSTER_NAME}' does not exist — run 'make create' first."
-kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" get gateway "$GW_NAME" >/dev/null 2>&1 \
+kctl -n "$GW_NS" get gateway "$GW_NAME" >/dev/null 2>&1 \
   || die "Gateway '${GW_NAME}' not found — run 'bash scripts/30-gateway.sh' first."
 
 CERT_DIR="$ROOT_DIR/certs"
 [[ -f "$CERT_DIR/rootCA.pem" ]] || die "Missing $CERT_DIR/rootCA.pem — run 'bash scripts/30-gateway.sh' first."
-
-kctl() { kubectl --context "$KUBE_CONTEXT" "$@"; }
 
 # ---------------------------------------------------------------------------
 # 1. Registry container IP on the kind network -> Service + Endpoints
@@ -34,59 +32,14 @@ kctl() { kubectl --context "$KUBE_CONTEXT" "$@"; }
 reg_ip="$("$CONTAINER_RUNTIME" inspect -f '{{.NetworkSettings.Networks.kind.IPAddress}}' "$REG_NAME" 2>/dev/null || true)"
 [[ -n "$reg_ip" ]] || die "Could not read the kind-network IP of container '${REG_NAME}' — is it running?"
 
-say "Exposing registry ${reg_ip}:5000 as Service default/kind-registry..."
-kctl apply -f - <<EOF
-apiVersion: v1
-kind: Service
-metadata:
-  name: kind-registry
-  namespace: default
-  labels:
-    app.kubernetes.io/managed-by: kind-infra
-spec:
-  ports:
-  - name: registry
-    port: 5000
-    targetPort: 5000
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: kind-registry
-  namespace: default
-  labels:
-    app.kubernetes.io/managed-by: kind-infra
-subsets:
-- addresses:
-  - ip: ${reg_ip}
-  ports:
-  - name: registry
-    port: 5000
-EOF
+say "Exposing registry ${reg_ip}:5000 as Service default/kind-registry (manifests/registry-service.yaml)..."
+REG_IP="$reg_ip" apply_manifest registry-service.yaml
 
 # ---------------------------------------------------------------------------
 # 2. Route kind-registry.${DOMAIN} (443/80) through the Gateway
 # ---------------------------------------------------------------------------
-say "Routing kind-registry.${DOMAIN} -> default/kind-registry:5000..."
-kctl apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: kind-registry
-  namespace: default
-  labels:
-    app.kubernetes.io/managed-by: kind-infra
-spec:
-  parentRefs:
-  - name: ${GW_NAME}
-    namespace: ${GW_NS}
-  hostnames:
-  - kind-registry.${DOMAIN}
-  rules:
-  - backendRefs:
-    - name: kind-registry
-      port: 5000
-EOF
+say "Routing kind-registry.${DOMAIN} -> default/kind-registry:5000 (manifests/registry-route.yaml)..."
+apply_manifest registry-route.yaml
 
 # ---------------------------------------------------------------------------
 # 3. containerd on the nodes: pull kind-registry.${DOMAIN}/... directly from

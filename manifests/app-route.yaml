@@ -1,0 +1,22 @@
+# HTTPRoute template used by scripts/60-register.sh (`make expose` / `make sync`).
+# ${HOST} and ${NS} define the route's identity; ${SVC}/${PORT} the backend;
+# ${GW_NAME}/${GW_NS} attach it to the shared Gateway.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ${HOST}
+  namespace: ${NS}
+  labels:
+    app.kubernetes.io/managed-by: kind-infra
+  annotations:
+    kind-infra.dev/host: "${HOST}"
+spec:
+  parentRefs:
+  - name: ${GW_NAME}
+    namespace: ${GW_NS}
+  hostnames:
+  - ${HOST}.${DOMAIN}
+  rules:
+  - backendRefs:
+    - name: ${SVC}
+      port: ${PORT}

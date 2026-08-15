@@ -13,8 +13,6 @@ KIND_IMAGE_VERSION=${KIND_IMAGE_VERSION:-1.35.0}
 # TLD, so it is collision-free in practice. Do NOT use "local": macOS reserves
 # it for Bonjour/mDNS and unicast DNS (/etc/resolver) is unreliable.
 DOMAIN=${DOMAIN:-internal}
-METALLB_VERSION=${METALLB_VERSION:-v0.15.3}
-INGRESS_NGINX_REF=${INGRESS_NGINX_REF:-main}
 CONTAINER_RUNTIME=${CONTAINER_RUNTIME:-$(command -v podman >/dev/null 2>&1 && echo podman || echo docker)}
 REG_NAME=${REG_NAME:-kind-registry}
 REG_PORT=${REG_PORT:-5001}
@@ -48,6 +46,34 @@ require() {
 
 cluster_exists() { kind get clusters 2>/dev/null | grep -qx "$KIND_CLUSTER_NAME"; }
 
+# kubectl for this cluster. Falls back to the ambient context when ours is
+# not in the effective kubeconfig — e.g. under chainsaw, which runs scripts
+# with a temporary kubeconfig containing a single renamed context.
+kctl() {
+  if kubectl config get-contexts -o name 2>/dev/null | grep -qx "$KUBE_CONTEXT"; then
+    kubectl --context "$KUBE_CONTEXT" "$@"
+  else
+    kubectl "$@"
+  fi
+}
+
+# render <manifest> — substitute ${VAR} placeholders in manifests/<manifest>
+# with the current environment and print the result. Vars shown in the
+# manifests are exported by common.sh / the calling script.
+render() {
+  local file="$ROOT_DIR/manifests/$1" line name
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    while [[ "$line" =~ \$\{([A-Za-z_][A-Za-z0-9_]*)\} ]]; do
+      name="${BASH_REMATCH[1]}"
+      line="${line//\$\{${name}\}/${!name:-}}"
+    done
+    printf '%s\n' "$line"
+  done < "$file"
+}
+
+# apply_manifest <manifest> — render a template and kubectl-apply it.
+apply_manifest() { render "$1" | kctl apply -f - >/dev/null; }
+
 # Regenerate the gateway TLS cert when a registered hostname is missing from
 # its SANs. Strict clients (macOS curl/LibreSSL, browsers) don't match a
 # wildcard directly under a bare suffix (*.internal), so every registered
@@ -66,7 +92,7 @@ refresh_gateway_cert() {
   local h
   while IFS= read -r h; do
     [[ -n "$h" ]] && sans+=("$h")
-  done < <(kubectl --context "$KUBE_CONTEXT" get httproute -A -o json 2>/dev/null \
+  done < <(kctl get httproute -A -o json 2>/dev/null \
     | jq -r '.items[].spec.hostnames[]?' | sort -u)
 
   local want have
@@ -83,18 +109,18 @@ refresh_gateway_cert() {
 
   local fp_file fp_secret
   fp_file="$(openssl x509 -in "$cert_file" -noout -fingerprint 2>/dev/null || true)"
-  fp_secret="$(kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" get secret kind-infra-wildcard \
+  fp_secret="$(kctl -n "$GW_NS" get secret kind-infra-wildcard \
     -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null \
     | openssl x509 -noout -fingerprint 2>/dev/null || true)"
 
   if [[ "$fp_file" != "$fp_secret" ]]; then
-    kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" create secret tls kind-infra-wildcard \
+    kctl -n "$GW_NS" create secret tls kind-infra-wildcard \
       --cert "$cert_file" --key "$key_file" \
-      --dry-run=client -o yaml | kubectl --context "$KUBE_CONTEXT" apply -f - >/dev/null
-    if kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" get deploy "$GW_NAME" >/dev/null 2>&1; then
+      --dry-run=client -o yaml | kctl apply -f - >/dev/null
+    if kctl -n "$GW_NS" get deploy "$GW_NAME" >/dev/null 2>&1; then
       say "Restarting proxy to pick up the new certificate..."
-      kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" rollout restart deploy "$GW_NAME"
-      kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" rollout status deploy "$GW_NAME" --timeout=180s >/dev/null
+      kctl -n "$GW_NS" rollout restart deploy "$GW_NAME"
+      kctl -n "$GW_NS" rollout status deploy "$GW_NAME" --timeout=180s >/dev/null
     fi
   fi
 }

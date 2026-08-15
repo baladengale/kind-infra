@@ -3,7 +3,7 @@
 # Local DNS: dnsmasq manages the *.${DOMAIN} zone -> 127.0.0.1, and macOS
 # sends queries for that zone (only) to dnsmasq via /etc/resolver.
 #
-# Result: any Ingress host under ${DOMAIN} resolves, e.g. http://app.${DOMAIN}
+# Result: any hostname under ${DOMAIN} resolves to 127.0.0.1, e.g. app.${DOMAIN}
 #
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -78,5 +78,5 @@ else
 fi
 
 echo
-echo "Done. Any Ingress host under ${DOMAIN} now resolves, e.g.: http://app.${DOMAIN}"
-echo "Add a service by creating an Ingress with host: <name>.${DOMAIN}"
+echo "Done. Any hostname under ${DOMAIN} now resolves to 127.0.0.1, e.g.: https://app.${DOMAIN}"
+echo "Register a service behind a hostname with: make expose HOST=app NS=<ns> SVC=<service> PORT=<port>"

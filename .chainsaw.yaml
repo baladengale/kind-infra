@@ -1,0 +1,15 @@
+# Chainsaw configuration for this repo (picked up automatically from the
+# working directory). The defaults (5s per script/exec) are far too short
+# for image pulls, rollout waits and cert-refresh restarts.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Configuration
+metadata:
+  name: kind-infra
+spec:
+  timeouts:
+    apply: 30s
+    assert: 180s
+    error: 60s
+    delete: 60s
+    cleanup: 60s
+    exec: 300s

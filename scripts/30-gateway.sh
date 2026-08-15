@@ -27,9 +27,9 @@ CERT_DIR="$ROOT_DIR/certs"
 # ---------------------------------------------------------------------------
 # 1. Gateway API CRDs + agentgateway control plane
 # ---------------------------------------------------------------------------
-if ! kubectl --context "$KUBE_CONTEXT" get crd gateways.gateway.networking.k8s.io >/dev/null 2>&1; then
+if ! kctl get crd gateways.gateway.networking.k8s.io >/dev/null 2>&1; then
   say "Installing Gateway API CRDs (v${GWAPI_VERSION})..."
-  kubectl --context "$KUBE_CONTEXT" apply --server-side --force-conflicts -f \
+  kctl apply --server-side --force-conflicts -f \
     "https://github.com/kubernetes-sigs/gateway-api/releases/download/v${GWAPI_VERSION}/standard-install.yaml"
 fi
 
@@ -54,35 +54,8 @@ refresh_gateway_cert
 # ---------------------------------------------------------------------------
 # 3. Gateway with HTTP + HTTPS listeners (any namespace may attach routes)
 # ---------------------------------------------------------------------------
-say "Creating Gateway '${GW_NAME}'..."
-kubectl --context "$KUBE_CONTEXT" apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: ${GW_NAME}
-  namespace: ${GW_NS}
-spec:
-  gatewayClassName: agentgateway
-  listeners:
-  - name: http
-    port: 8080
-    protocol: HTTP
-    allowedRoutes:
-      namespaces:
-        from: All
-  - name: https
-    port: 8443
-    protocol: HTTPS
-    tls:
-      mode: Terminate
-      certificateRefs:
-      - group: ""
-        kind: Secret
-        name: kind-infra-wildcard
-    allowedRoutes:
-      namespaces:
-        from: All
-EOF
+say "Creating Gateway '${GW_NAME}' (manifests/gateway.yaml)..."
+apply_manifest gateway.yaml
 
 # ---------------------------------------------------------------------------
 # 4. Pin the proxy dataplane to the ingress-ready node with hostPorts.
@@ -90,23 +63,23 @@ EOF
 #    Fall back to the newest non-controller deployment if that ever changes.
 # ---------------------------------------------------------------------------
 say "Waiting for the proxy Deployment '${GW_NAME}' (image pulls can take a while)..."
-if kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" wait --for=exist deploy/"$GW_NAME" --timeout=300s >/dev/null 2>&1; then
+if kctl -n "$GW_NS" wait --for=exist deploy/"$GW_NAME" --timeout=300s >/dev/null 2>&1; then
   dep_name="$GW_NAME"
 else
-  dep_name="$(kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" get deploy -o json | jq -r '
+  dep_name="$(kctl -n "$GW_NS" get deploy -o json | jq -r '
     .items
     | sort_by(.metadata.creationTimestamp)
     | .[] | select(.metadata.name != "agentgateway")
     | .metadata.name' | tail -1)"
 fi
 [[ -n "${dep_name:-}" ]] || die "No proxy Deployment found — check: kubectl -n ${GW_NS} get deploy,pods && kubectl -n ${GW_NS} logs deploy/agentgateway"
-cname="$(kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" get deploy "$dep_name" \
+cname="$(kctl -n "$GW_NS" get deploy "$dep_name" \
   -o jsonpath='{.spec.template.spec.containers[0].name}')"
 
 say "Patching ${dep_name} (nodeSelector ingress-ready + hostPorts 8080/8443)..."
 # strategic merge: merges containers/ports by name instead of replacing them.
 # Recreate strategy: hostPorts conflict during RollingUpdate on a single node.
-kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" patch deploy "$dep_name" --type strategic -p "
+kctl -n "$GW_NS" patch deploy "$dep_name" --type strategic -p "
 spec:
   strategy:
     type: Recreate
@@ -123,9 +96,9 @@ spec:
         - containerPort: 8443
           hostPort: 8443"
 
-kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" rollout status deploy "$dep_name" --timeout=180s
+kctl -n "$GW_NS" rollout status deploy "$dep_name" --timeout=180s
 # Gateway API conditions are Accepted/Programmed (there is no Available).
-kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" wait --for=condition=Programmed gateway "$GW_NAME" --timeout=180s
+kctl -n "$GW_NS" wait --for=condition=Programmed gateway "$GW_NAME" --timeout=180s
 
 # ---------------------------------------------------------------------------
 # 5. Probe host ports 80/443 through the node mappings

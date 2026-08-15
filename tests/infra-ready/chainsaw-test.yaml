@@ -1,0 +1,35 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: infra-ready
+spec:
+  description: >-
+    Base infra is healthy: all nodes Ready, AgentGateway control plane
+    available, the kind-infra Gateway Programmed, and the local DNS zone
+    answering.
+  steps:
+  - name: all-nodes-ready
+    try:
+    - script:
+        content: kubectl wait --for=condition=Ready nodes --all --timeout=120s
+  - name: agentgateway-available
+    try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            namespace: agentgateway-system
+            name: agentgateway
+          status:
+            availableReplicas: 1
+  - name: gateway-programmed
+    try:
+    - script:
+        content: kubectl -n agentgateway-system wait --for=condition=Programmed gateway kind-infra --timeout=60s
+  - name: dns-answers-for-the-zone
+    try:
+    - script:
+        content: |
+          ip="$(dig +short "test.${DOMAIN}" @127.0.0.1 | tail -1)"
+          [ "$ip" = "127.0.0.1" ] || { echo "test.${DOMAIN} -> '${ip}', expected 127.0.0.1"; exit 1; }

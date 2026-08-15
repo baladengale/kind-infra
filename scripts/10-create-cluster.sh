@@ -52,17 +52,6 @@ if [ "$("$CONTAINER_RUNTIME" inspect -f='{{json .NetworkSettings.Networks.kind}}
 fi
 
 # 5. Advertise the registry (https://kind.sigs.k8s.io/docs/user/local-registry/).
-cat <<EOF | kubectl --context "$KUBE_CONTEXT" apply -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: local-registry-hosting
-  namespace: kube-public
-data:
-  localRegistryHosting.v1: |
-    host: "localhost:${REG_PORT}"
-    hostFromClusterNetwork: "${REG_NAME}:${REG_INTERNAL_PORT}"
-    help: "https://kind.sigs.k8s.io/docs/user/local-registry/"
-EOF
+apply_manifest local-registry-hosting.yaml
 
 ok "Cluster + registry ready (push/pull images via localhost:${REG_PORT})"

@@ -35,7 +35,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 require kubectl jq
 cluster_exists || die "Cluster '${KIND_CLUSTER_NAME}' does not exist — run 'make create' first."
-kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" get gateway "$GW_NAME" >/dev/null 2>&1 \
+kctl -n "$GW_NS" get gateway "$GW_NAME" >/dev/null 2>&1 \
   || die "Gateway '${GW_NAME}' not found — run 'bash scripts/30-gateway.sh' first."
 
 ANNOT_HOST="kind-infra.dev/host"
@@ -47,31 +47,9 @@ usage() {
   exit 1
 }
 
-kctl() { kubectl --context "$KUBE_CONTEXT" "$@"; }
-
 apply_route() { # <host> <namespace> <service> <port>
   local host="$1" ns="$2" svc="$3" port="$4"
-  kctl apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: ${host}
-  namespace: ${ns}
-  labels:
-    app.kubernetes.io/managed-by: kind-infra
-  annotations:
-    ${ANNOT_HOST}: "${host}"
-spec:
-  parentRefs:
-  - name: ${GW_NAME}
-    namespace: ${GW_NS}
-  hostnames:
-  - ${host}.${DOMAIN}
-  rules:
-  - backendRefs:
-    - name: ${svc}
-      port: ${port}
-EOF
+  HOST="$host" NS="$ns" SVC="$svc" PORT="$port" apply_manifest app-route.yaml
 }
 
 # Enumerate annotated Services: host<TAB>namespace<TAB>service<TAB>port

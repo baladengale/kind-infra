@@ -1,0 +1,22 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: registry
+spec:
+  description: >-
+    The local registry is reachable on standard TLS port 443 via the
+    Gateway, with a certificate trusted by the local mkcert CA.
+  steps:
+  - name: registry-answers-over-tls-on-443
+    try:
+    - script:
+        content: |
+          for _ in $(seq 1 30); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+              --cacert "${REPO_ROOT}/certs/rootCA.pem" \
+              "https://kind-registry.${DOMAIN}/v2/" || true)"
+            [ "$code" = "200" ] && exit 0
+            sleep 2
+          done
+          echo "https://kind-registry.${DOMAIN}/v2/ never returned 200 (last: ${code})"
+          exit 1

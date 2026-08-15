@@ -1,0 +1,30 @@
+# Gateway served by AgentGateway. Listeners bind unprivileged 8080/8443;
+# kind maps host 80/443 to them (kind/kind-config.yaml extraPortMappings).
+# Any namespace may attach routes. TLS terminates with the kind-infra-wildcard
+# secret generated from the mkcert CA (scripts/30-gateway.sh).
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ${GW_NAME}
+  namespace: ${GW_NS}
+spec:
+  gatewayClassName: agentgateway
+  listeners:
+  - name: http
+    port: 8080
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: https
+    port: 8443
+    protocol: HTTPS
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - group: ""
+        kind: Secret
+        name: kind-infra-wildcard
+    allowedRoutes:
+      namespaces:
+        from: All
