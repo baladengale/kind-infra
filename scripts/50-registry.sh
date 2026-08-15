@@ -104,6 +104,10 @@ server = "https://kind-registry.${DOMAIN}"
 EOF
 done
 
+# Explicit SAN for the new hostname (strict clients need it; the wildcard
+# *.${DOMAIN} alone is not matched by macOS curl/LibreSSL).
+refresh_gateway_cert
+
 # ---------------------------------------------------------------------------
 # 4. Verify over real TLS (works regardless of DNS state via --resolve)
 # ---------------------------------------------------------------------------

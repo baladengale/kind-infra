@@ -44,23 +44,12 @@ helm upgrade -i agentgateway "oci://cr.agentgateway.dev/charts/agentgateway" \
   --set controller.image.pullPolicy=Always --wait >/dev/null
 
 # ---------------------------------------------------------------------------
-# 2. Wildcard TLS certificate (mkcert: CA lands in the macOS keychain, which
-#    Docker Desktop syncs into its VM -> `docker push` trusts the Gateway)
+# 2. TLS certificate: wildcard *.${DOMAIN} + an explicit SAN per registered
+#    hostname (strict clients don't match bare-suffix wildcards). The mkcert
+#    CA lands in the macOS keychain, which Docker Desktop syncs into its VM,
+#    so `docker push` trusts the Gateway too.
 # ---------------------------------------------------------------------------
-mkdir -p "$CERT_DIR"
-if [[ ! -f "$CERT_DIR/rootCA.pem" ]]; then
-  cp "$(mkcert -CAROOT)/rootCA.pem" "$CERT_DIR/rootCA.pem"
-fi
-if [[ ! -f "$CERT_DIR/_wildcard.${DOMAIN}-key.pem" ]]; then
-  say "Issuing wildcard certificate for *.${DOMAIN}..."
-  (cd "$CERT_DIR" && mkcert "*.${DOMAIN}" >/dev/null)
-fi
-
-say "Installing TLS secret into ${GW_NS}..."
-kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" create secret tls kind-infra-wildcard \
-  --cert "$CERT_DIR/_wildcard.${DOMAIN}.pem" \
-  --key "$CERT_DIR/_wildcard.${DOMAIN}-key.pem" \
-  --dry-run=client -o yaml | kubectl --context "$KUBE_CONTEXT" apply -f -
+refresh_gateway_cert
 
 # ---------------------------------------------------------------------------
 # 3. Gateway with HTTP + HTTPS listeners (any namespace may attach routes)
@@ -97,27 +86,31 @@ EOF
 
 # ---------------------------------------------------------------------------
 # 4. Pin the proxy dataplane to the ingress-ready node with hostPorts.
-#    The proxy Deployment appears when the Gateway is created; find it by
-#    diffing deployments before/after instead of hardcoding chart internals.
+#    The chart creates one proxy Deployment per Gateway, named after it.
+#    Fall back to the newest non-controller deployment if that ever changes.
 # ---------------------------------------------------------------------------
-say "Waiting for the proxy Deployment for Gateway '${GW_NAME}'..."
-before="$(kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" get deploy -o name | sort)"
-proxy_dep=""
-for _ in $(seq 1 60); do
-  now="$(kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" get deploy -o name | sort)"
-  proxy_dep="$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$now") | head -1)"
-  [[ -n "$proxy_dep" ]] && break
-  sleep 2
-done
-[[ -n "$proxy_dep" ]] || die "No proxy Deployment appeared for Gateway '${GW_NAME}' — check: kubectl -n ${GW_NS} get deploy,pods"
-
-dep_name="${proxy_dep#deployment.apps/}"
+say "Waiting for the proxy Deployment '${GW_NAME}' (image pulls can take a while)..."
+if kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" wait --for=exist deploy/"$GW_NAME" --timeout=300s >/dev/null 2>&1; then
+  dep_name="$GW_NAME"
+else
+  dep_name="$(kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" get deploy -o json | jq -r '
+    .items
+    | sort_by(.metadata.creationTimestamp)
+    | .[] | select(.metadata.name != "agentgateway")
+    | .metadata.name' | tail -1)"
+fi
+[[ -n "${dep_name:-}" ]] || die "No proxy Deployment found — check: kubectl -n ${GW_NS} get deploy,pods && kubectl -n ${GW_NS} logs deploy/agentgateway"
 cname="$(kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" get deploy "$dep_name" \
   -o jsonpath='{.spec.template.spec.containers[0].name}')"
 
 say "Patching ${dep_name} (nodeSelector ingress-ready + hostPorts 8080/8443)..."
-kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" patch deploy "$dep_name" --type merge -p "
+# strategic merge: merges containers/ports by name instead of replacing them.
+# Recreate strategy: hostPorts conflict during RollingUpdate on a single node.
+kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" patch deploy "$dep_name" --type strategic -p "
 spec:
+  strategy:
+    type: Recreate
+    rollingUpdate: null
   template:
     spec:
       nodeSelector:
@@ -131,7 +124,8 @@ spec:
           hostPort: 8443"
 
 kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" rollout status deploy "$dep_name" --timeout=180s
-kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" wait --for=condition=Available gateway "$GW_NAME" --timeout=180s
+# Gateway API conditions are Accepted/Programmed (there is no Available).
+kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" wait --for=condition=Programmed gateway "$GW_NAME" --timeout=180s
 
 # ---------------------------------------------------------------------------
 # 5. Probe host ports 80/443 through the node mappings

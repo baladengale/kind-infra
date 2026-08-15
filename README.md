@@ -5,7 +5,6 @@ Local Kubernetes base infrastructure, managed with make:
 - **kind cluster** with host ports 80/443 published for the gateway
 - **local container registry** — `docker push kind-registry.internal/img:tag`,
   no port suffix, real TLS on 443
-- **MetalLB** — LoadBalancer services get IPs from the kind network pool
 - **AgentGateway** (Gateway API) — routes hostnames to services on standard
   ports: `https://kagent.internal`, with a locally-trusted wildcard cert
 - **local DNS** (dnsmasq + macOS resolver) — `*.internal` resolves to 127.0.0.1
@@ -85,7 +84,7 @@ spec:
 
 | Target | What it does |
 |---|---|
-| `make create` | Cluster + registry + MetalLB + AgentGateway + DNS + registry route |
+| `make create` | Cluster + registry + AgentGateway + DNS + registry route |
 | `make update` | Re-apply addons on the existing cluster (idempotent; picks up version bumps) |
 | `make upgrade` | Recreate the cluster with the current `KIND_IMAGE_VERSION` (destructive) |
 | `make delete` | Remove DNS, delete cluster and registry |
@@ -102,7 +101,6 @@ spec:
 | `DOMAIN` | `internal` | DNS zone + TLS wildcard (`*.internal`) |
 | `KIND_CLUSTER_NAME` | `kind` | Cluster name (context: `kind-kind`) |
 | `KIND_IMAGE_VERSION` | `1.35.0` | `kindest/node` version — bump + `make upgrade` |
-| `METALLB_VERSION` | `v0.15.3` | MetalLB manifest version |
 | `GWAPI_VERSION` | `1.6.0` | Gateway API CRDs version |
 | `AGW_VERSION` | `0.0.0-latest-dev` | AgentGateway chart version |
 | `CONTAINER_RUNTIME` | auto (podman→docker) | Runtime kind runs on |
@@ -136,8 +134,6 @@ https://kagent.internal            docker push kind-registry.internal/img
 Notes:
 - Only the configured zone is routed to dnsmasq; the rest of your DNS is
   untouched.
-- On macOS/Docker Desktop, MetalLB IPs (172.18.255.x) are **not** reachable
-  from the host — that's why the gateway goes through published host ports.
 - The proxy binds 8080/8443 (unprivileged) and kind maps host 80/443 to them.
 
 ## Structure
@@ -147,7 +143,6 @@ Makefile                  lifecycle orchestration
 kind/kind-config.yaml     cluster config (ports 80/443 -> 8080/8443, registry)
 scripts/common.sh         shared vars + helpers
 scripts/10-create-cluster.sh   cluster + local registry
-scripts/20-metallb.sh          MetalLB + IPAddressPool
 scripts/30-gateway.sh          AgentGateway + mkcert TLS + Gateway + hostPorts
 scripts/40-dns-install.sh      dnsmasq zone + /etc/resolver
 scripts/41-dns-remove.sh       undo the DNS bits
@@ -173,6 +168,55 @@ Stale DNS cache: `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`
 macOS with: kind, kubectl, helm, jq, Homebrew (dnsmasq + mkcert installed
 automatically), docker or podman. `mkcert -install`, `make delete` and the
 DNS scripts use `sudo`.
+
+## Developer Experience
+
+### kubectl plugins and aliases
+
+Install enhanced kubectl tools for better developer experience:
+
+```bash
+make kubectl-tools
+```
+
+This installs:
+- **kubecolor**: Colored kubectl output (easier to read)
+- **kctx**: Quick cluster context switching (`kubectl ctx`)
+- **kns**: Quick namespace switching (`kubectl ns`)
+
+After installation, source the provided aliases in your shell:
+
+```bash
+# Add to your ~/.zshrc or ~/.bashrc
+source /path/to/kind/shell-aliases.sh
+```
+
+**Common aliases available:**
+```bash
+k            # kubectl (or kubecolor if installed)
+kg           # kubectl get
+kd           # kubectl describe
+kctx         # switch clusters
+kns          # switch namespaces
+kkind        # kubectl --context kind-kind
+kpo          # kubectl get pods
+ksv          # kubectl get services
+```
+
+**Example workflow:**
+```bash
+# List pods in current namespace
+k get pods
+
+# Switch to a different cluster
+kubectl ctx
+
+# Switch namespace
+kubectl ns
+
+# Use kind cluster with aliases
+kkind get pods -n agentgateway-system
+```
 
 Cluster-setup scripts adapted from the
 [kind docs](https://kind.sigs.k8s.io/docs/user/local-registry/) and the

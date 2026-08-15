@@ -47,3 +47,54 @@ require() {
 }
 
 cluster_exists() { kind get clusters 2>/dev/null | grep -qx "$KIND_CLUSTER_NAME"; }
+
+# Regenerate the gateway TLS cert when a registered hostname is missing from
+# its SANs. Strict clients (macOS curl/LibreSSL, browsers) don't match a
+# wildcard directly under a bare suffix (*.internal), so every registered
+# hostname also gets an explicit SAN. Updates the TLS secret and restarts
+# the proxy dataplane only when the certificate actually changed.
+refresh_gateway_cert() {
+  local cert_dir="$ROOT_DIR/certs"
+  local cert_file="$cert_dir/_wildcard.${DOMAIN}.pem"
+  local key_file="$cert_dir/_wildcard.${DOMAIN}-key.pem"
+  mkdir -p "$cert_dir"
+
+  # Always keep a copy of the CA for --cacert probes.
+  [[ -f "$cert_dir/rootCA.pem" ]] || cp "$(mkcert -CAROOT)/rootCA.pem" "$cert_dir/rootCA.pem"
+
+  local -a sans=("*.${DOMAIN}")
+  local h
+  while IFS= read -r h; do
+    [[ -n "$h" ]] && sans+=("$h")
+  done < <(kubectl --context "$KUBE_CONTEXT" get httproute -A -o json 2>/dev/null \
+    | jq -r '.items[].spec.hostnames[]?' | sort -u)
+
+  local want have
+  want="$(printf '%s\n' "${sans[@]}" | sort -u)"
+  if [[ -f "$cert_file" ]]; then
+    have="$(openssl x509 -in "$cert_file" -noout -ext subjectAltName 2>/dev/null \
+      | grep -o 'DNS:[^ ,]*' | sed 's/^DNS://' | sort -u)"
+  fi
+
+  if [[ "$want" != "${have:-}" ]]; then
+    say "Issuing certificate for: ${sans[*]}"
+    (cd "$cert_dir" && mkcert --cert-file "$cert_file" --key-file "$key_file" "${sans[@]}" >/dev/null)
+  fi
+
+  local fp_file fp_secret
+  fp_file="$(openssl x509 -in "$cert_file" -noout -fingerprint 2>/dev/null || true)"
+  fp_secret="$(kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" get secret kind-infra-wildcard \
+    -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null \
+    | openssl x509 -noout -fingerprint 2>/dev/null || true)"
+
+  if [[ "$fp_file" != "$fp_secret" ]]; then
+    kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" create secret tls kind-infra-wildcard \
+      --cert "$cert_file" --key "$key_file" \
+      --dry-run=client -o yaml | kubectl --context "$KUBE_CONTEXT" apply -f - >/dev/null
+    if kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" get deploy "$GW_NAME" >/dev/null 2>&1; then
+      say "Restarting proxy to pick up the new certificate..."
+      kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" rollout restart deploy "$GW_NAME"
+      kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" rollout status deploy "$GW_NAME" --timeout=180s >/dev/null
+    fi
+  fi
+}

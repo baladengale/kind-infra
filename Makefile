@@ -1,6 +1,6 @@
 # kind-infra — local Kubernetes base infrastructure via make
 #
-#   make create    cluster + local registry + MetalLB + ingress + DNS
+#   make create    cluster + local registry + AgentGateway + DNS
 #   make update    re-apply addons on the existing cluster (idempotent)
 #   make upgrade   recreate the cluster with a newer Kubernetes version
 #   make delete    remove DNS entries, cluster and registry
@@ -12,12 +12,11 @@
 DOMAIN              ?= internal
 KIND_CLUSTER_NAME   ?= kind
 KIND_IMAGE_VERSION  ?= 1.35.0
-METALLB_VERSION     ?= v0.15.3
 GWAPI_VERSION       ?= 1.6.0
 AGW_VERSION         ?= 0.0.0-latest-dev
 CONTAINER_RUNTIME   ?= $(shell command -v podman >/dev/null 2>&1 && echo podman || echo docker)
 
-export DOMAIN KIND_CLUSTER_NAME KIND_IMAGE_VERSION METALLB_VERSION GWAPI_VERSION AGW_VERSION CONTAINER_RUNTIME
+export DOMAIN KIND_CLUSTER_NAME KIND_IMAGE_VERSION GWAPI_VERSION AGW_VERSION CONTAINER_RUNTIME
 
 KUBE_CONTEXT := kind-$(KIND_CLUSTER_NAME)
 HOST ?=
@@ -27,15 +26,14 @@ PORT ?=
 
 .DEFAULT_GOAL := help
 .PHONY: help create update upgrade delete delete-cluster dns-install dns-remove \
-        expose unexpose sync status
+        expose unexpose sync status kubectl-tools
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-create: ## Create everything: cluster, registry, MetalLB, AgentGateway, DNS
+create: ## Create everything: cluster, registry, AgentGateway, DNS
 	@bash scripts/10-create-cluster.sh
-	@bash scripts/20-metallb.sh
 	@bash scripts/30-gateway.sh
 	@bash scripts/40-dns-install.sh
 	@bash scripts/50-registry.sh
@@ -45,7 +43,6 @@ create: ## Create everything: cluster, registry, MetalLB, AgentGateway, DNS
 	@echo "  -> https://myapp.$(DOMAIN)"
 
 update: ## Re-apply addons on the existing cluster (picks up version bumps)
-	@bash scripts/20-metallb.sh
 	@bash scripts/30-gateway.sh
 	@bash scripts/50-registry.sh
 	@bash scripts/40-dns-install.sh
@@ -75,7 +72,8 @@ dns-install: ## Install/refresh the local DNS zone (*.$(DOMAIN))
 dns-remove: ## Remove the local DNS zone (*.$(DOMAIN))
 	@bash scripts/41-dns-remove.sh
 
-expose: ## Route HOST.$(DOMAIN) to a Service: make expose HOST=x NS=y SVC=z PORT=n	@if [ -z "$(HOST)" ] || [ -z "$(SVC)" ]; then \
+expose: ## Route HOST.$(DOMAIN) to a Service: make expose HOST=x NS=y SVC=z PORT=n
+	@if [ -z "$(HOST)" ] || [ -z "$(SVC)" ]; then \
 		echo "usage: make expose HOST=kagent NS=kagent SVC=kagent-ui PORT=8080"; exit 2; fi
 	@bash scripts/60-register.sh expose "$(HOST)" "$(NS)" "$(SVC)" "$(PORT)"
 
@@ -91,8 +89,6 @@ status: ## Show clusters, addons, registry and DNS state
 	@echo "== clusters =="; kind get clusters 2>/dev/null || echo "(none)"
 	@echo "== nodes =="; \
 		kubectl --context $(KUBE_CONTEXT) get nodes 2>/dev/null || echo "(no cluster '$(KIND_CLUSTER_NAME)')"
-	@echo "== metallb =="; \
-		kubectl --context $(KUBE_CONTEXT) get pods -n metallb-system 2>/dev/null || true
 	@echo "== agentgateway =="; \
 		kubectl --context $(KUBE_CONTEXT) get pods -n agentgateway-system 2>/dev/null || true
 	@echo "== gateway =="; \
@@ -103,3 +99,6 @@ status: ## Show clusters, addons, registry and DNS state
 		dig +short test.$(DOMAIN) @127.0.0.1 2>/dev/null || echo "(dnsmasq not answering)"
 	@echo "== gateway probe (https://test.$(DOMAIN)) =="; \
 		curl -sk -o /dev/null -w 'HTTP %{http_code}\n' --max-time 3 https://test.$(DOMAIN) 2>/dev/null || echo "(no response)"
+
+kubectl-tools: ## Install kubectl plugins (kubecolor, kctx, kns)
+	@bash scripts/kubectl-tools.sh

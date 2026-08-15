@@ -106,6 +106,7 @@ cmd_expose() { # <host> [namespace] [service] [port]
     [[ -n "$port" ]] || die "Could not read a port from svc ${ns}/${svc} — pass PORT explicitly."
   fi
   apply_route "$host" "$ns" "$svc" "$port" >/dev/null
+  refresh_gateway_cert   # explicit SAN for the new hostname
   ok "https://${host}.${DOMAIN} -> ${ns}/${svc}:${port}"
 }
 
