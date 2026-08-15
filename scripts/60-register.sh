@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# Register hostnames -> k8s Services, routed through ingress-nginx on port 80.
-# No port-forwarding involved.
+# Register hostnames -> k8s Services as HTTPRoutes on the AgentGateway.
+# Routed on standard ports (80 plain, 443 TLS with the *.${DOMAIN} wildcard),
+# no port-forwarding involved.
 #
 # Two ways to register:
 #
@@ -12,7 +13,7 @@
 #          kind-infra.dev/host=kagent kind-infra.dev/port=8080
 #        make sync
 #
-#      -> http://kagent.internal serves kagent-ui:8080.
+#      -> https://kagent.internal serves kagent-ui:8080.
 #      Port defaults to the Service's first port when the annotation is absent.
 #      `make sync` also prunes registrations whose Service lost the annotation.
 #
@@ -21,15 +22,21 @@
 #        make expose HOST=kagent NS=kagent SVC=kagent-ui PORT=8080
 #        make unexpose HOST=kagent
 #
-# Hostnames are relative to $DOMAIN (default: test), i.e. HOST=kagent
+# Hostnames are relative to $DOMAIN (default: internal), i.e. HOST=kagent
 # becomes kagent.internal. DNS itself is a wildcard, so the hostname resolves
-# the moment the Ingress exists.
+# the moment the HTTPRoute exists.
+#
+# gRPC backends: HTTPRoute is HTTP-only; for gRPC services create a GRPCRoute
+# with the same parentRefs/hostnames (AgentGateway supports it on the same
+# 443 listener — see README).
 #
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 require kubectl jq
 cluster_exists || die "Cluster '${KIND_CLUSTER_NAME}' does not exist — run 'make create' first."
+kubectl --context "$KUBE_CONTEXT" -n "$GW_NS" get gateway "$GW_NAME" >/dev/null 2>&1 \
+  || die "Gateway '${GW_NAME}' not found — run 'bash scripts/30-gateway.sh' first."
 
 ANNOT_HOST="kind-infra.dev/host"
 ANNOT_PORT="kind-infra.dev/port"
@@ -42,11 +49,11 @@ usage() {
 
 kctl() { kubectl --context "$KUBE_CONTEXT" "$@"; }
 
-apply_ingress() { # <host> <namespace> <service> <port>
+apply_route() { # <host> <namespace> <service> <port>
   local host="$1" ns="$2" svc="$3" port="$4"
   kctl apply -f - <<EOF
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
 metadata:
   name: ${host}
   namespace: ${ns}
@@ -55,18 +62,15 @@ metadata:
   annotations:
     ${ANNOT_HOST}: "${host}"
 spec:
-  ingressClassName: nginx
+  parentRefs:
+  - name: ${GW_NAME}
+    namespace: ${GW_NS}
+  hostnames:
+  - ${host}.${DOMAIN}
   rules:
-  - host: ${host}.${DOMAIN}
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: ${svc}
-            port:
-              number: ${port}
+  - backendRefs:
+    - name: ${svc}
+      port: ${port}
 EOF
 }
 
@@ -85,12 +89,12 @@ desired_services() {
     | @tsv'
 }
 
-# Enumerate managed Ingresses: namespace<TAB>name<TAB>host
-managed_ingresses() {
-  kctl get ingress -A -l "$LABEL_MANAGED" -o json | jq -r '
+# Enumerate managed HTTPRoutes: namespace<TAB>name<TAB>hostname
+managed_routes() {
+  kctl get httproute -A -l "$LABEL_MANAGED" -o json | jq -r '
     .items[]
     | [ .metadata.namespace, .metadata.name,
-        (.spec.rules[0].host // "") ]
+        (.spec.hostnames[0] // "") ]
     | @tsv'
 }
 
@@ -101,8 +105,8 @@ cmd_expose() { # <host> [namespace] [service] [port]
     port="$(kctl -n "$ns" get svc "$svc" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null)" || true
     [[ -n "$port" ]] || die "Could not read a port from svc ${ns}/${svc} — pass PORT explicitly."
   fi
-  apply_ingress "$host" "$ns" "$svc" "$port" >/dev/null
-  ok "http://${host}.${DOMAIN} -> ${ns}/${svc}:${port}"
+  apply_route "$host" "$ns" "$svc" "$port" >/dev/null
+  ok "https://${host}.${DOMAIN} -> ${ns}/${svc}:${port}"
 }
 
 cmd_remove() { # <host>
@@ -111,38 +115,38 @@ cmd_remove() { # <host>
   local deleted=0 ns name h
   while IFS=$'\t' read -r ns name h; do
     [[ "$h" == "${host}.${DOMAIN}" ]] || continue
-    kctl -n "$ns" delete ingress "$name" --ignore-not-found >/dev/null
-    ok "Removed ${h} (ingress ${ns}/${name})"
+    kctl -n "$ns" delete httproute "$name" --ignore-not-found >/dev/null
+    ok "Removed ${h} (httproute ${ns}/${name})"
     deleted=1
-  done < <(managed_ingresses)
+  done < <(managed_routes)
   ((deleted)) || warn "No registration found for ${host}.${DOMAIN}"
 }
 
 cmd_sync() {
-  local desired_actual="$(mktemp)" desired_hosts="$(mktemp)"
+  local desired_hosts="$(mktemp)"
   local host ns svc port h name
   while IFS=$'\t' read -r host ns svc port; do
     [[ -n "$host" ]] || continue
-    apply_ingress "$host" "$ns" "$svc" "$port" >/dev/null
+    apply_route "$host" "$ns" "$svc" "$port" >/dev/null
     echo "${host}.${DOMAIN}" >> "$desired_hosts"
-    ok "http://${host}.${DOMAIN} -> ${ns}/${svc}:${port}"
+    ok "https://${host}.${DOMAIN} -> ${ns}/${svc}:${port}"
   done < <(desired_services)
 
-  # Prune managed ingresses whose Service no longer carries the annotation.
+  # Prune managed routes whose Service no longer carries the annotation.
   while IFS=$'\t' read -r ns name h; do
     [[ -n "$h" ]] || continue
     if ! grep -qx "$h" "$desired_hosts"; then
-      kctl -n "$ns" delete ingress "$name" --ignore-not-found >/dev/null
-      ok "Pruned ${h} (ingress ${ns}/${name})"
+      kctl -n "$ns" delete httproute "$name" --ignore-not-found >/dev/null
+      ok "Pruned ${h} (httproute ${ns}/${name})"
     fi
-  done < <(managed_ingresses)
+  done < <(managed_routes)
 
   if [[ ! -s "$desired_hosts" ]]; then
     warn "No Services annotated with ${ANNOT_HOST} — nothing registered."
     echo "Annotate one and re-run, e.g.:"
     echo "  kubectl -n <ns> annotate svc <name> ${ANNOT_HOST}=<host> [${ANNOT_PORT}=<port>]"
   fi
-  rm -f "$desired_actual" "$desired_hosts"
+  rm -f "$desired_hosts"
 }
 
 case "${1:-}" in

@@ -2,11 +2,13 @@
 
 Local Kubernetes base infrastructure, managed with make:
 
-- **kind cluster** with host ports 80/443 published for ingress
-- **local container registry** (`localhost:5001`, wired into every node)
+- **kind cluster** with host ports 80/443 published for the gateway
+- **local container registry** — `docker push kind-registry.internal/img:tag`,
+  no port suffix, real TLS on 443
 - **MetalLB** — LoadBalancer services get IPs from the kind network pool
-- **ingress-nginx** — routes `http://<name>.<domain>` to services by Host header
-- **local DNS** (dnsmasq + macOS resolver) — `*.<domain>` resolves to 127.0.0.1
+- **AgentGateway** (Gateway API) — routes hostnames to services on standard
+  ports: `https://kagent.internal`, with a locally-trusted wildcard cert
+- **local DNS** (dnsmasq + macOS resolver) — `*.internal` resolves to 127.0.0.1
 
 Hostnames are short: `kagent.internal`, `kind-registry.internal`, `myapp.internal`.
 
@@ -15,7 +17,7 @@ Hostnames are short: `kagent.internal`, `kind-registry.internal`, `myapp.interna
 > suffix ending in `.local`** (`test.local` too); the DNS script refuses them.
 > The default `.internal` isn't formally RFC-reserved, but it has never been
 > delegated as a real TLD, so it's collision-free in practice. If you want a
-> fully reserved suffix, use `test` (`kagent.internal`) or `home.arpa`.
+> fully reserved suffix, use `test` (`kagent.test`) or `home.arpa`.
 
 ## Quickstart
 
@@ -24,46 +26,66 @@ make create     # everything above, idempotent
 make status     # verify each layer
 ```
 
-## Hostnames, without port-forwarding
+## Hostnames on standard ports — no port-forwarding
 
-Two mechanisms — both end at a k8s Service, never a `kubectl port-forward`:
-
-**1. Wildcard DNS (zero registration).** Everything under `*.internal` resolves to
-127.0.0.1, so any port already published on the host works by name:
+**1. Register a hostname → Service (80 plain + 443 TLS via the Gateway).**
 
 ```bash
-docker push kind-registry.internal:5001/myimage:tag   # hits the local registry
-```
+# one-off
+make expose HOST=kagent NS=kagent SVC=kagent-ui PORT=8080
+# -> https://kagent.internal  (http:// works too)
 
-**2. Register a hostname → Service (routed through ingress on :80).**
-Annotate the Service and sync:
-
-```bash
+# or declarative: annotate the Service, then sync (prunes stale entries)
 kubectl -n kagent annotate svc kagent-ui \
   kind-infra.dev/host=kagent kind-infra.dev/port=8080
-make sync     # creates the Ingress; also prunes stale registrations
-# -> http://kagent.internal
-```
+make sync
 
-Or do it directly without touching the Service:
-
-```bash
-make expose HOST=kagent NS=kagent SVC=kagent-ui PORT=8080
+# remove one
 make unexpose HOST=kagent
 ```
 
-`PORT` defaults to the Service's first port. The Ingress objects carry the
-label `app.kubernetes.io/managed-by: kind-infra` so sync can prune safely.
+`PORT` defaults to the Service's first port. Registrations are HTTPRoute
+objects labeled `app.kubernetes.io/managed-by: kind-infra`, attached to the
+`kind-infra` Gateway.
 
-Non-HTTP/TCP ports (e.g. gRPC on 8084) can't ride the HTTP ingress — either
-add an `extraPortMapping` in `kind/kind-config.yaml` + `make upgrade`, or use
-ingress-nginx's `tcp-services` ConfigMap.
+**2. The registry — port-free, TLS on 443.**
+
+```bash
+docker push kind-registry.internal/myimage:tag
+```
+
+This works because the Gateway terminates TLS for `*.internal` with a
+[mkcert](https://github.com/FiloSottile/mkcert) wildcard certificate whose CA
+lives in your macOS keychain — and Docker Desktop syncs host roots into its
+VM. If pushes fail with x509 errors after first setup, restart Docker Desktop
+once. Kind nodes pull the same image names directly via a containerd `certs.d`
+bypass (no Gateway hop). The legacy `localhost:5001` endpoint keeps working
+for compatibility.
+
+**3. Wildcard DNS (zero registration).** Everything under `*.internal`
+resolves to 127.0.0.1, so any port published on the host is reachable by
+name.
+
+**gRPC services:** HTTPRoute is HTTP-only. For gRPC backends create a
+GRPCRoute with the same `parentRefs`/`hostnames` — AgentGateway serves it on
+the same 443 listener:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata: { name: kagent-grpc, namespace: kagent }
+spec:
+  parentRefs: [{ name: kind-infra, namespace: agentgateway-system }]
+  hostnames: ["kagent-grpc.internal"]
+  rules:
+  - backendRefs: [{ name: kagent-controller, port: 8084 }]
+```
 
 ## Lifecycle targets
 
 | Target | What it does |
 |---|---|
-| `make create` | Cluster + registry + MetalLB + ingress + DNS |
+| `make create` | Cluster + registry + MetalLB + AgentGateway + DNS + registry route |
 | `make update` | Re-apply addons on the existing cluster (idempotent; picks up version bumps) |
 | `make upgrade` | Recreate the cluster with the current `KIND_IMAGE_VERSION` (destructive) |
 | `make delete` | Remove DNS, delete cluster and registry |
@@ -77,11 +99,12 @@ ingress-nginx's `tcp-services` ConfigMap.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DOMAIN` | `internal` | DNS zone managed by dnsmasq |
+| `DOMAIN` | `internal` | DNS zone + TLS wildcard (`*.internal`) |
 | `KIND_CLUSTER_NAME` | `kind` | Cluster name (context: `kind-kind`) |
 | `KIND_IMAGE_VERSION` | `1.35.0` | `kindest/node` version — bump + `make upgrade` |
 | `METALLB_VERSION` | `v0.15.3` | MetalLB manifest version |
-| `INGRESS_NGINX_REF` | `main` | ingress-nginx manifest ref |
+| `GWAPI_VERSION` | `1.6.0` | Gateway API CRDs version |
+| `AGW_VERSION` | `0.0.0-latest-dev` | AgentGateway chart version |
 | `CONTAINER_RUNTIME` | auto (podman→docker) | Runtime kind runs on |
 
 Example — a second cluster with its own zone:
@@ -90,66 +113,68 @@ Example — a second cluster with its own zone:
 make create KIND_CLUSTER_NAME=dev DOMAIN=dev.test
 ```
 
-Point targets at an existing cluster (e.g. one created by another repo):
-
-```bash
-make sync KIND_CLUSTER_NAME=kagent     # uses context kind-kagent
-```
-
-Note: hostname routing still requires that cluster to have been created with
-this repo's kind config (host ports 80/443 + `ingress-ready` label).
-
 ## How it fits together
 
 ```
-http://kagent.internal
-  │  1. macOS routes *.internal to dnsmasq (/etc/resolver/internal)
-  │  2. dnsmasq answers 127.0.0.1
-  ▼
-127.0.0.1:80  (kind extraPortMappings)
-  ▼
-  3. ingress-nginx routes by Host header
-  ▼
-Service kagent-ui  (registered via `make expose` / annotation + `make sync`)
+https://kagent.internal            docker push kind-registry.internal/img
+        │                                        │
+        ▼                                        ▼
+  1. macOS routes *.internal to dnsmasq (/etc/resolver/internal)
+  2. dnsmasq answers 127.0.0.1
+        │
+        ▼
+  127.0.0.1:443  (kind extraPortMappings -> node 8443)
+        │
+        ▼
+  3. AgentGateway proxy (TLS terminate, mkcert wildcard) routes by hostname
+        │
+        ├─ kagent.internal ────────▶ Service kagent-ui:8080
+        └─ kind-registry.internal ▶ Service kind-registry ─▶ registry:5000
+                                   (nodes pull directly via certs.d bypass)
 ```
 
 Notes:
 - Only the configured zone is routed to dnsmasq; the rest of your DNS is
   untouched.
 - On macOS/Docker Desktop, MetalLB IPs (172.18.255.x) are **not** reachable
-  from the host — that's why ingress goes through published host ports.
+  from the host — that's why the gateway goes through published host ports.
+- The proxy binds 8080/8443 (unprivileged) and kind maps host 80/443 to them.
 
 ## Structure
 
 ```
 Makefile                  lifecycle orchestration
-kind/kind-config.yaml     cluster config (ports 80/443, ingress-ready label, registry)
+kind/kind-config.yaml     cluster config (ports 80/443 -> 8080/8443, registry)
 scripts/common.sh         shared vars + helpers
 scripts/10-create-cluster.sh   cluster + local registry
 scripts/20-metallb.sh          MetalLB + IPAddressPool
-scripts/30-ingress.sh          ingress-nginx
+scripts/30-gateway.sh          AgentGateway + mkcert TLS + Gateway + hostPorts
 scripts/40-dns-install.sh      dnsmasq zone + /etc/resolver
 scripts/41-dns-remove.sh       undo the DNS bits
-scripts/50-register.sh         hostname registration (expose / remove / sync)
+scripts/50-registry.sh         port-free registry route + containerd bypass
+scripts/60-register.sh         hostname registration (expose / remove / sync)
+certs/                    mkcert CA + wildcard key (gitignored)
 ```
 
 ## Debugging (layer by layer)
 
 ```bash
-dig anything.internal @127.0.0.1                # 1. dnsmasq -> 127.0.0.1?
-curl -H "Host: kagent.internal" http://127.0.0.1    # 2. ingress routing?
-kubectl get ingress -A -l app.kubernetes.io/managed-by=kind-infra
-make status                                      # everything at a glance
+dig anything.internal @127.0.0.1                    # 1. dnsmasq -> 127.0.0.1?
+curl -sk https://127.0.0.1 -H 'Host: kagent.internal'  # 2. gateway routing?
+kubectl get httproute -A -l app.kubernetes.io/managed-by=kind-infra
+kubectl -n agentgateway-system get gateway,pods     # 3. gateway layer
+make status                                         # everything at a glance
 ```
 
 Stale DNS cache: `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`
 
 ## Requirements
 
-macOS with: kind, kubectl, jq, Homebrew (dnsmasq installed automatically),
-docker or podman. `make delete` and the DNS scripts use `sudo` for
-`/etc/resolver`.
+macOS with: kind, kubectl, helm, jq, Homebrew (dnsmasq + mkcert installed
+automatically), docker or podman. `mkcert -install`, `make delete` and the
+DNS scripts use `sudo`.
 
 Cluster-setup scripts adapted from the
 [kind docs](https://kind.sigs.k8s.io/docs/user/local-registry/) and the
-[kagent](https://github.com/kagent-dev/kagent) repo (Apache-2.0).
+[kagent](https://github.com/kagent-dev/kagent) repo (Apache-2.0). Gateway:
+[AgentGateway](https://agentgateway.dev).

@@ -21,6 +21,12 @@ REG_PORT=${REG_PORT:-5001}
 REG_INTERNAL_PORT=${REG_INTERNAL_PORT:-5000}
 REG_SCHEME=${REG_SCHEME:-http}
 
+# Gateway layer (AgentGateway, Gateway API)
+GWAPI_VERSION=${GWAPI_VERSION:-1.6.0}
+AGW_VERSION=${AGW_VERSION:-0.0.0-latest-dev}
+GW_NS=${GW_NS:-agentgateway-system}
+GW_NAME=${GW_NAME:-kind-infra}
+
 KUBE_CONTEXT="kind-${KIND_CLUSTER_NAME}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

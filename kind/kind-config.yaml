@@ -2,10 +2,11 @@
 #
 # - containerd registry config_path enables the local registry wiring done by
 #   scripts/10-create-cluster.sh (localhost:5001 -> kind-registry container)
-# - the ingress-ready node label is required by the kind ingress-nginx
-#   manifest applied by scripts/30-ingress.sh
-# - extraPortMappings publish host 80/443 so the ingress controller is
-#   reachable at 127.0.0.1 (macOS/Docker Desktop cannot route MetalLB IPs)
+# - the ingress-ready node label is where the AgentGateway proxy pins itself
+#   (hostPorts 8080/8443 — see scripts/30-gateway.sh)
+# - extraPortMappings publish host 80/443; they map to node ports 8080/8443
+#   because the proxy binds unprivileged ports. From the machine everything
+#   is plain http://name.internal / https://name.internal
 #
 # The cluster name is passed via `kind create cluster --name` (see Makefile).
 kind: Cluster
@@ -25,9 +26,9 @@ nodes:
       kubeletExtraArgs:
         node-labels: "ingress-ready=true"
   extraPortMappings:
-  - containerPort: 80
+  - containerPort: 8080
     hostPort: 80
     protocol: TCP
-  - containerPort: 443
+  - containerPort: 8443
     hostPort: 443
     protocol: TCP
