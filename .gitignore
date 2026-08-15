@@ -1,0 +1,11 @@
+# never commit credentials or local state
+.env
+.env.*
+*.key
+*.pem
+*.kubeconfig
+
+# os / editor noise
+.DS_Store
+*.log
+tmp/

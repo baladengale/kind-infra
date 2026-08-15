@@ -1,0 +1,33 @@
+# kind cluster config for local base infra.
+#
+# - containerd registry config_path enables the local registry wiring done by
+#   scripts/10-create-cluster.sh (localhost:5001 -> kind-registry container)
+# - the ingress-ready node label is required by the kind ingress-nginx
+#   manifest applied by scripts/30-ingress.sh
+# - extraPortMappings publish host 80/443 so the ingress controller is
+#   reachable at 127.0.0.1 (macOS/Docker Desktop cannot route MetalLB IPs)
+#
+# The cluster name is passed via `kind create cluster --name` (see Makefile).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri".registry]
+    config_path = "/etc/containerd/certs.d"
+networking:
+  apiServerAddress: "127.0.0.1"
+nodes:
+- role: control-plane
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "ingress-ready=true"
+  extraPortMappings:
+  - containerPort: 80
+    hostPort: 80
+    protocol: TCP
+  - containerPort: 443
+    hostPort: 443
+    protocol: TCP
