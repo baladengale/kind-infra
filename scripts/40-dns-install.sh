@@ -11,6 +11,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 require brew dig
 [[ "$(uname -s)" == "Darwin" ]] || die "macOS-only (uses Homebrew dnsmasq + /etc/resolver)."
 
+# Homebrew refuses to run as root; sudo is invoked internally where needed.
+[[ "$(id -u)" == "0" ]] && die "Don't run this as root — Homebrew breaks. Run 'make dns-install' as your regular user; the script calls sudo itself for /etc/resolver."
+
 DOMAIN="${DOMAIN#.}"   # tolerate a leading dot
 case "$DOMAIN" in
   test|internal) ;;

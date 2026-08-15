@@ -8,6 +8,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 BREW_PREFIX="$(brew --prefix)"
 
+# Homebrew refuses to run as root; sudo is invoked internally where needed.
+if [[ "$(id -u)" == "0" ]]; then
+  echo "Don't run this as root — Homebrew breaks. Run 'make dns-remove' as your regular user." >&2
+  exit 1
+fi
+
 if [[ -f "/etc/resolver/${DOMAIN}" ]]; then
   say "Removing /etc/resolver/${DOMAIN} (sudo)..."
   sudo rm -f "/etc/resolver/${DOMAIN}"
