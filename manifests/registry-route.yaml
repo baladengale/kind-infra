@@ -1,5 +1,7 @@
-# Port-free registry access: https://kind-registry.${DOMAIN} through the
+# Port-free registry access: https://kind-registry.internal through the
 # Gateway on 443 (scripts/50-registry.sh).
+#
+# Plain YAML — no variables: kubectl apply -f manifests/registry-route.yaml
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -9,10 +11,10 @@ metadata:
     app.kubernetes.io/managed-by: kind-infra
 spec:
   parentRefs:
-  - name: ${GW_NAME}
-    namespace: ${GW_NS}
+  - name: kind-infra
+    namespace: agentgateway-system
   hostnames:
-  - kind-registry.${DOMAIN}
+  - kind-registry.internal
   rules:
   - backendRefs:
     - name: kind-registry

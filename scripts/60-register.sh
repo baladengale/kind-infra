@@ -49,7 +49,29 @@ usage() {
 
 apply_route() { # <host> <namespace> <service> <port>
   local host="$1" ns="$2" svc="$3" port="$4"
-  HOST="$host" NS="$ns" SVC="$svc" PORT="$port" apply_manifest app-route.yaml
+  # Routes registered here are per-app (arbitrary host/service/port), so they
+  # are generated inline instead of living as a static manifest.
+  kctl apply -f - >/dev/null <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ${host}
+  namespace: ${ns}
+  labels:
+    app.kubernetes.io/managed-by: kind-infra
+  annotations:
+    kind-infra.dev/host: "${host}"
+spec:
+  parentRefs:
+  - name: ${GW_NAME}
+    namespace: ${GW_NS}
+  hostnames:
+  - ${host}.${DOMAIN}
+  rules:
+  - backendRefs:
+    - name: ${svc}
+      port: ${port}
+EOF
 }
 
 # Enumerate annotated Services: host<TAB>namespace<TAB>service<TAB>port

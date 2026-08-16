@@ -1,5 +1,6 @@
 # kind-infra — local Kubernetes base infrastructure via make
 #
+#   make all       ONE command: cluster + registry + AgentGateway + kagent + site
 #   make create    cluster + local registry + AgentGateway + registry route
 #   make dns-install  one-time machine setup: *.internal -> 127.0.0.1 (sudo)
 #   make update    re-apply addons on the existing cluster (idempotent)
@@ -29,13 +30,16 @@ SVC  ?=
 PORT ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help create update upgrade delete delete-cluster dns-install dns-remove \
+.PHONY: help all create update upgrade delete delete-cluster dns-install dns-remove \
         expose unexpose sync test kagent-deploy kagent-build-deploy kagent-delete \
-        status kubectl-tools kagent-mcp-test
+        site-deploy status kubectl-tools kagent-mcp-test
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+
+all: ## Everything from scratch: cluster, registry, AgentGateway, kagent, site (idempotent)
+	@bash scripts/00-up.sh
 
 create: ## Create everything: cluster, registry, AgentGateway, registry route
 	@bash scripts/10-create-cluster.sh
@@ -98,6 +102,9 @@ kagent-build-deploy: ## Build ../kagent, push to local registry, deploy the loca
 
 kagent-delete: ## Uninstall kagent and remove the kagent.$(DOMAIN) route
 	@bash scripts/80-kagent.sh delete
+
+site-deploy: ## Build + deploy the internal website (../baladengale.github.io) at https://baladengale.$(DOMAIN)
+	@bash scripts/90-site.sh
 
 status: ## Show clusters, addons, registry and DNS state
 	@echo "== clusters =="; kind get clusters 2>/dev/null || echo "(none)"

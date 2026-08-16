@@ -1,5 +1,8 @@
-# Consolidated HTTPRoute for kagent - UI and MCP endpoints
-# This replaces the separate kagent and kagent-mcp routes
+# Consolidated HTTPRoute for kagent — UI and MCP endpoints on one hostname.
+# All paths go to the UI except /mcp, which goes to the controller.
+# Applied by scripts/80-kagent.sh (`make kagent-deploy`).
+#
+# Plain YAML — no variables: kubectl apply -f manifests/kagent-route.yaml
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -14,7 +17,7 @@ spec:
     - name: kind-infra
       namespace: agentgateway-system
   hostnames:
-    - "kagent.${DOMAIN}"
+    - kagent.internal
   rules:
     # UI routes (default) - all other paths go to UI
     - matches:

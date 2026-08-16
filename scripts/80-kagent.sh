@@ -65,8 +65,6 @@ DEP_IMAGES=(
 # --- cluster-side settings ---------------------------------------------------
 KAGENT_NS="kagent"
 KAGENT_UI_HOST="kagent"                # -> https://kagent.${DOMAIN}
-KAGENT_UI_SVC="kagent-ui"
-KAGENT_UI_PORT="8080"
 KAGENT_DIR="${KAGENT_DIR:-$ROOT_DIR/../kagent}"
 REG_HOST="kind-registry.${DOMAIN}"
 
@@ -145,46 +143,11 @@ mirror_images() {
 
 expose_ui() {
   say "Exposing kagent UI + MCP at https://${KAGENT_UI_HOST}.${DOMAIN}..."
-  # Remove existing separate routes if they exist
-  kubectl -n "$KAGENT_NS" delete httproute kagent --ignore-not-found >/dev/null 2>&1 || true
-  kubectl -n "$KAGENT_NS" delete httproute kagent-mcp --ignore-not-found >/dev/null 2>&1 || true
-
-  # Apply consolidated route with both UI and MCP endpoints
-  DOMAIN="$DOMAIN" HOST="$KAGENT_UI_HOST" NS="$KAGENT_NS" \
-    SVC="$KAGENT_UI_SVC" PORT="$KAGENT_UI_PORT" \
-    GW_NAME="$GW_NAME" GW_NS="$GW_NS" \
-    bash -c 'kubectl apply -f - <<EOF
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: kagent
-  namespace: '"$NS"'
-  labels:
-    app.kubernetes.io/managed-by: kind-infra
-  annotations:
-    kind-infra.dev/host: '"$HOST"'
-spec:
-  parentRefs:
-    - name: '"$GW_NAME"'
-      namespace: '"$GW_NS"'
-  hostnames:
-    - '"$HOST.'"${DOMAIN}"
-  rules:
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /
-      backendRefs:
-        - name: '"$SVC"'
-          port: '"$PORT"'
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /mcp
-      backendRefs:
-        - name: kagent-controller
-          port: 8083
-EOF'
+  # Remove legacy separate routes if they exist, then apply the consolidated
+  # route (UI + /mcp) from the static manifest.
+  kctl -n "$KAGENT_NS" delete httproute kagent-mcp --ignore-not-found >/dev/null 2>&1 || true
+  apply_manifest kagent-route.yaml
+  refresh_gateway_cert   # explicit SAN for the hostname
 }
 
 probe_ui() {

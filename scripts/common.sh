@@ -57,22 +57,11 @@ kctl() {
   fi
 }
 
-# render <manifest> — substitute ${VAR} placeholders in manifests/<manifest>
-# with the current environment and print the result. Vars shown in the
-# manifests are exported by common.sh / the calling script.
-render() {
-  local file="$ROOT_DIR/manifests/$1" line name
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    while [[ "$line" =~ \$\{([A-Za-z_][A-Za-z0-9_]*)\} ]]; do
-      name="${BASH_REMATCH[1]}"
-      line="${line//\$\{${name}\}/${!name:-}}"
-    done
-    printf '%s\n' "$line"
-  done < "$file"
-}
-
-# apply_manifest <manifest> — render a template and kubectl-apply it.
-apply_manifest() { render "$1" | kctl apply -f - >/dev/null; }
+# apply_manifest <manifest> — kubectl-apply manifests/<manifest>. Files in
+# manifests/ are plain YAML with no variables (kubectl-appliable as-is);
+# the few truly dynamic objects (per-app routes, registry Endpoints) are
+# built inline by the calling scripts.
+apply_manifest() { kctl apply -f "$ROOT_DIR/manifests/$1" >/dev/null; }
 
 # Regenerate the gateway TLS cert when a registered hostname is missing from
 # its SANs. Strict clients (macOS curl/LibreSSL, browsers) don't match a

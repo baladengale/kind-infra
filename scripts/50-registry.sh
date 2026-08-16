@@ -33,7 +33,27 @@ reg_ip="$("$CONTAINER_RUNTIME" inspect -f '{{.NetworkSettings.Networks.kind.IPAd
 [[ -n "$reg_ip" ]] || die "Could not read the kind-network IP of container '${REG_NAME}' — is it running?"
 
 say "Exposing registry ${reg_ip}:5000 as Service default/kind-registry (manifests/registry-service.yaml)..."
-REG_IP="$reg_ip" apply_manifest registry-service.yaml
+apply_manifest registry-service.yaml
+
+# The Endpoints point at the registry container's IP on the kind network,
+# which changes whenever the container is recreated — so they are written
+# here instead of living in a static manifest.
+say "Pointing Endpoints default/kind-registry at ${reg_ip}:5000..."
+kctl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: kind-registry
+  namespace: default
+  labels:
+    app.kubernetes.io/managed-by: kind-infra
+subsets:
+- addresses:
+  - ip: ${reg_ip}
+  ports:
+  - name: registry
+    port: 5000
+EOF
 
 # ---------------------------------------------------------------------------
 # 2. Route kind-registry.${DOMAIN} (443/80) through the Gateway

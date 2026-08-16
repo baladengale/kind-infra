@@ -1,7 +1,9 @@
-# Registry reachable from inside the cluster: a headless Service with manual
-# Endpoints pointing at the kind-registry container's IP on the kind network
-# (scripts/50-registry.sh fills in ${REG_IP}), so the Gateway can proxy it
-# like any other backend.
+# Registry reachable from inside the cluster: a selector-less Service whose
+# Endpoints point at the kind-registry container's IP on the kind network,
+# so the Gateway can proxy it like any other backend. The Endpoints object
+# is written by scripts/50-registry.sh because the container IP is dynamic.
+#
+# Plain YAML — no variables: kubectl apply -f manifests/registry-service.yaml
 apiVersion: v1
 kind: Service
 metadata:
@@ -14,17 +16,3 @@ spec:
   - name: registry
     port: 5000
     targetPort: 5000
----
-apiVersion: v1
-kind: Endpoints
-metadata:
-  name: kind-registry
-  namespace: default
-  labels:
-    app.kubernetes.io/managed-by: kind-infra
-subsets:
-- addresses:
-  - ip: ${REG_IP}
-  ports:
-  - name: registry
-    port: 5000

@@ -21,11 +21,19 @@ Hostnames are short: `kagent.internal`, `kind-registry.internal`, `myapp.interna
 ## Quickstart
 
 ```bash
+cp kagent/env.example .env   # fill in ANTHROPIC_API_KEY (needed by kagent)
 make dns-install   # ONE-TIME, machine-level: *.internal -> 127.0.0.1 (uses sudo)
-make create        # cluster + registry + AgentGateway (idempotent)
-make test          # chainsaw e2e tests against the running cluster
-make status        # verify each layer
+make all          # ONE command: cluster + registry + AgentGateway + kagent + site
+make test         # chainsaw e2e tests against the running cluster
+make status       # verify each layer
 ```
+
+`make all` is the full bootstrap in order — cluster + registry, AgentGateway
++ TLS, registry route, kagent (images mirrored into the local registry, helm
+install, UI + MCP route), personal site (build, load, manifests, route).
+Every step is idempotent: re-run to converge. Only the one-time DNS setup
+(`make dns-install`, sudo) is left out — `make all` probes it and reminds
+you if it is missing.
 
 ## Hostnames on standard ports — no port-forwarding
 
@@ -86,6 +94,7 @@ spec:
 
 | Target | What it does |
 |---|---|
+| `make all` | Full bootstrap: `create` + kagent + personal site, in order (idempotent) |
 | `make create` | Cluster + registry + AgentGateway + registry route (DNS is one-time, see below) |
 | `make update` | Re-apply addons on the existing cluster (idempotent; picks up version bumps) |
 | `make upgrade` | Recreate the cluster with the current `KIND_IMAGE_VERSION` (destructive) |
@@ -144,14 +153,15 @@ Notes:
 ```
 Makefile                  lifecycle orchestration (create/update/delete/test/...)
 kind/kind-config.yaml     cluster config (ports 80/443 -> 8080/8443, registry)
-manifests/                all applied YAML, with ${VAR} placeholders filled by scripts
+manifests/                plain YAML, no variables — kubectl apply -f works directly
   gateway.yaml            kind-infra Gateway (HTTP 8080 + HTTPS 8443 listeners)
-  app-route.yaml          HTTPRoute template used by expose/sync
-  registry-service.yaml   registry Service + Endpoints (container IP)
-  registry-route.yaml     kind-registry.<DOMAIN> HTTPRoute
+  kagent-route.yaml       kagent.internal HTTPRoute (UI + /mcp)
+  registry-service.yaml   registry Service (Endpoints are dynamic — 50-registry.sh)
+  registry-route.yaml     kind-registry.internal HTTPRoute
   local-registry-hosting.yaml  registry discovery ConfigMap
 scripts/
-  common.sh               shared vars + helpers (render/apply_manifest)
+  00-up.sh                one-command bootstrap behind `make all`
+  common.sh               shared vars + helpers (apply_manifest, cert refresh)
   10-create-cluster.sh    cluster + local registry
   30-gateway.sh           AgentGateway + mkcert TLS + Gateway + hostPorts
   40-dns-install.sh       dnsmasq zone + /etc/resolver
@@ -160,6 +170,7 @@ scripts/
   60-register.sh          hostname registration (expose / remove / sync)
   70-test.sh              chainsaw runner behind `make test`
   80-kagent.sh            kagent deployment wrapper (see below)
+  90-site.sh              internal website (../baladengale.github.io) deploy
 kagent/                   wrapper defaults for deploying ../kagent
   values.yaml             customization defaults (agents off, etc.)
   env.example             template for the gitignored .env (API keys)
@@ -167,9 +178,12 @@ tests/                    chainsaw e2e tests (see below)
 certs/                    mkcert CA + wildcard key (gitignored)
 ```
 
-Everything applied to the cluster lives in `manifests/` as plain YAML;
-the scripts only render `${VAR}` placeholders (`DOMAIN`, gateway names,
-registry IP, ...) and pipe the result into `kubectl apply`.
+Everything applied to the cluster lives in `manifests/` as plain YAML with
+no variables — any file there can be applied as-is with
+`kubectl apply -f`. The only generated objects are the truly dynamic ones:
+per-app routes from `make expose`/`make sync` (arbitrary host/service/port)
+and the registry Endpoints (the container IP changes on recreate); the
+scripts build and apply those inline.
 
 ## Deploying kagent (wrapper)
 
@@ -221,6 +235,24 @@ images stay cached in the registry).
 Customization defaults (kept here, upstream stays clean) live in
 `kagent/values.yaml` — the built-in cluster-ops agents (cilium×3,
 observability, promql) are disabled for a lean local cluster.
+
+## Hosting the internal website
+
+The personal site lives in `../baladengale.github.io` (markdown rendered by
+`build.py`, served by nginx). One target builds it, side-loads the image into
+the nodes, applies the site repo's `deploy/` manifests **in order**
+(namespace → deployment → service → route), rolls the pods, and refreshes
+the cert SAN:
+
+```bash
+make site-deploy
+# -> https://baladengale.internal
+```
+
+Re-run after any content change — the tag is always `:latest`, so the script
+restarts the rollout to pick it up. The route (`deploy/route.yaml` in the
+site repo) is plain YAML on the shared Gateway, identical to what
+`make sync` would generate from the Service annotations.
 
 ## End-to-end tests (chainsaw)
 

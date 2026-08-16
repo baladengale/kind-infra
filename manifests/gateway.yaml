@@ -2,11 +2,13 @@
 # kind maps host 80/443 to them (kind/kind-config.yaml extraPortMappings).
 # Any namespace may attach routes. TLS terminates with the kind-infra-wildcard
 # secret generated from the mkcert CA (scripts/30-gateway.sh).
+#
+# Plain YAML — no variables: kubectl apply -f manifests/gateway.yaml
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: ${GW_NAME}
-  namespace: ${GW_NS}
+  name: kind-infra
+  namespace: agentgateway-system
 spec:
   gatewayClassName: agentgateway
   listeners:
