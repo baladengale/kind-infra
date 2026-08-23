@@ -1,8 +1,20 @@
 # kind-infra wrapper defaults for kagent — layered on top of the chart in
 # BOTH deploy modes (upstream OCI chart and local ../kagent checkout).
 #
-# Keep the built-in cluster-ops agents off for a lean local dev cluster
-# (they spawn extra app pods that are rarely used locally).
+# Keep the following off by default for a lean local dev cluster:
+#   - cluster-ops agents (spawn extra app pods rarely used locally)
+#   - grafana-mcp RemoteMCPServer (requires Grafana, rarely used locally)
+#   - standalone agent charts (argo-rollouts, helm, istio)
+#
+# Agents
+argo-rollouts-agent:
+  enabled: false
+helm-agent:
+  enabled: false
+istio-agent:
+  enabled: false
+
+# Cluster-ops agents
 cilium-debug-agent:
   enabled: false
 cilium-manager-agent:
@@ -12,6 +24,10 @@ cilium-policy-agent:
 observability-agent:
   enabled: false
 promql-agent:
+  enabled: false
+
+# Remote MCP servers
+grafana-mcp:
   enabled: false
 
 # Model provider configuration - DeepSeek via Anthropic-compatible API

@@ -6,8 +6,11 @@
 # All values can be overridden via environment variables (the Makefile
 # exports its ?= defaults, so `make create FOO=bar` wins over both).
 
-KIND_CLUSTER_NAME=${KIND_CLUSTER_NAME:-kind}
+KIND_CLUSTER_NAME=${KIND_CLUSTER_NAME:-kagent}
 KIND_IMAGE_VERSION=${KIND_IMAGE_VERSION:-1.35.0}
+# kind cluster config, relative to the repo root (substrate mode uses
+# kind/kind-config-substrate.yaml to enable the pod-identity feature gates).
+KIND_CONFIG=${KIND_CONFIG:-kind/kind-config.yaml}
 # Hostnames look like <name>.$DOMAIN — e.g. kagent.internal, kind-registry.internal.
 # ".internal" is not formally reserved but has never been delegated as a real
 # TLD, so it is collision-free in practice. Do NOT use "local": macOS reserves
@@ -18,12 +21,26 @@ REG_NAME=${REG_NAME:-kind-registry}
 REG_PORT=${REG_PORT:-5001}
 REG_INTERNAL_PORT=${REG_INTERNAL_PORT:-5000}
 REG_SCHEME=${REG_SCHEME:-http}
+REG_HOST=${REG_HOST:-kind-registry.${DOMAIN}}
 
 # Gateway layer (AgentGateway, Gateway API)
 GWAPI_VERSION=${GWAPI_VERSION:-1.6.0}
 AGW_VERSION=${AGW_VERSION:-0.0.0-latest-dev}
 GW_NS=${GW_NS:-agentgateway-system}
 GW_NAME=${GW_NAME:-kind-infra}
+
+# kagent Agent Substrate (see scripts/85-substrate.sh + kagent/values-substrate.yaml).
+# Substrate v0.0.20 pairs with kagent >= 0.10.0-rc3 (chart tags on ghcr).
+SUBSTRATE_ENABLED=${SUBSTRATE_ENABLED:-false}
+SUBSTRATE_VERSION=${SUBSTRATE_VERSION:-0.0.20}
+SUBSTRATE_NS=${SUBSTRATE_NS:-ate-system}
+# WorkerPool ateom image, referenced as localhost:PORT so substrate's atelet
+# can rewrite it (--localhost-registry-replacement) to the in-cluster registry.
+SUBSTRATE_ATEOM_IMAGE="localhost:${REG_PORT}/kagent-dev/substrate/ateom-gvisor:v${SUBSTRATE_VERSION}"
+# Where atelet resolves localhost:PORT registry refs from inside the cluster:
+# the kind-registry Service (plain HTTP on the internal port — see
+# manifests/registry-service.yaml and scripts/50-registry.sh).
+SUBSTRATE_REG_REWRITE="kind-registry.default.svc:${REG_INTERNAL_PORT}"
 
 KUBE_CONTEXT="kind-${KIND_CLUSTER_NAME}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -1,0 +1,27 @@
+# kind-infra kagent values for Agent Substrate mode — layered on top of the
+# chart in BOTH deploy modes when SUBSTRATE_ENABLED=true (see scripts/80-kagent.sh).
+#
+# The substrate PLATFORM itself (ate-system) is installed separately by
+# scripts/85-substrate.sh — this file only wires the kagent controller to it
+# and adds the default WorkerPool.
+#
+# In this mode scripts/80-kagent.sh also switches the chart's `registry` value
+# to localhost:PORT so substrate's atelet can rewrite image refs to the
+# in-cluster registry Service (see scripts/85-substrate.sh).
+
+controller:
+  substrate:
+    enabled: true
+    # Substrate ate-api server, addressed over cluster DNS with the
+    # controller's projected ServiceAccount token (the chart renders the
+    # RBAC + token projection when this block is enabled).
+    ateApiEndpoint: dns:///api.ate-system.svc:443
+
+# Platform capacity for substrate actors — the WorkerPool runs the ateom
+# (gVisor) workers that SandboxAgents and AgentHarnesses are scheduled onto.
+# ateomImage is versioned and set by scripts/80-kagent.sh to the local
+# registry mirror, referenced as localhost:PORT for the atelet rewrite.
+substrateWorkerPool:
+  create: true
+  replicas: 1
+  sandboxClass: gvisor

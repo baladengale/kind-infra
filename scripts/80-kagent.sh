@@ -17,6 +17,17 @@
 #                 localhost as insecure), then install the LOCAL chart.
 #   delete        uninstall both releases and remove the hostname route.
 #
+# Agent Substrate (SUBSTRATE_ENABLED=true, set via `make ... SUBSTRATE_ENABLED=true`):
+# requires the LOCAL chart + images (build-deploy). The published upstream
+# releases predate the podcert wiring the controller needs to talk to the
+# substrate v${SUBSTRATE_VERSION} platform (the kagent repo refuses official
+# releases for substrate the same way), so `deploy` rejects the flag. Both
+# local modes wire the controller to the ate-system platform (installed by
+# scripts/85-substrate.sh — it MUST be healthy first, the controller dials
+# ate-api at startup) and create the default WorkerPool. In this mode the
+# chart's `registry` value switches to localhost:${REG_PORT} so ActorTemplate
+# image refs are rewritten by atelet to the in-cluster registry.
+#
 # Token reading (wrapper default: Anthropic provider):
 #   ANTHROPIC_API_KEY  required — from the environment or a gitignored .env at
 #                      the repo root (see kagent/env.example)
@@ -38,7 +49,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # Override the release per-run:  make kagent-deploy KAGENT_VERSION=0.7.9
 # (older releases may not have all images below — trim CORE/EXTRA to match).
 # ============================================================================
-KAGENT_VERSION="${KAGENT_VERSION:-0.10.0-rc2}"  # chart tag + main image tag
+KAGENT_VERSION="${KAGENT_VERSION:-0.10.0-rc3}"  # chart tag + main image tag
 KAGENT_IMAGE_PREFIX="ghcr.io/kagent-dev/kagent" # upstream main images
 CHART_REPO="oci://ghcr.io/kagent-dev/kagent/helm" # charts: ${CHART_REPO}/kagent{,-crds}
 
@@ -97,13 +108,37 @@ provider_sets() {
   printf '%s\n' "${args[@]}"
 }
 
-# Fix a packaged kagent chart for install: the agent subcharts render an
-# empty `spec.declarative.deployment:` (null), which the Agent CRD rejects,
-# and render fields the CRD schema doesn't declare (a2aConfig.resources),
-# which server-side apply rejects. Drop those lines; the manifests then
-# install cleanly with --server-side=false.
+# Helm values for Agent Substrate mode (SUBSTRATE_ENABLED=true) — appended
+# AFTER the per-mode --sets and BEFORE the -f values files (see cmd_* below).
+# Prints nothing when substrate is disabled.
+substrate_sets() {
+  [[ "$SUBSTRATE_ENABLED" = "true" ]] || return 0
+  # The controller dials ate-api unconditionally at startup, so the platform
+  # must be installed and healthy before this release is upgraded.
+  kctl -n "$SUBSTRATE_NS" get pod -l app=ate-api-server >/dev/null 2>&1 \
+    || die "Substrate platform not found in '${SUBSTRATE_NS}' — run: make create SUBSTRATE_ENABLED=true"
+  # localhost:PORT registry refs: atelet rewrites them (--localhost-registry-
+  # replacement, set by scripts/85-substrate.sh) to the in-cluster registry.
+  # kubelet still resolves them via the containerd certs.d wiring, so every
+  # other pod image is unaffected.
+  printf '%s\n' \
+    --set "registry=localhost:${REG_PORT}" \
+    --set "substrateWorkerPool.ateomImage=${SUBSTRATE_ATEOM_IMAGE}" \
+    -f "$ROOT_DIR/kagent/values-substrate.yaml"
+}
+
+# Fix a packaged kagent chart for install: the agent subcharts render a
+# `spec.declarative.deployment:` block (older releases render it empty/null,
+# which the Agent CRD rejects). Drop the whole block — the key line AND the
+# `{{- include "agent.deploymentSpec" }}` line that renders its contents.
+# Dropping only the key orphans that content (a `resources:` block) under the
+# preceding `a2aConfig:` key, which the CRD then warns about as unknown field
+# `spec.declarative.a2aConfig.resources`.
 patch_chart() { # <extracted chart dir>
-  sed -i '' '/^    deployment:$/d' "$1"/charts/*/templates/agent.yaml 2>/dev/null || true
+  sed -i '' \
+    -e '/^    deployment:$/d' \
+    -e '/agent.deploymentSpec/d' \
+    "$1"/charts/*/templates/agent.yaml 2>/dev/null || true
 }
 
 manifest_cached() { # <repo> <tag> — image already in the local registry?
@@ -163,6 +198,11 @@ probe_ui() {
 
 cmd_deploy() {
   require kubectl helm "$CONTAINER_RUNTIME" curl
+  # Substrate needs the podcert wiring that only exists in the local chart +
+  # locally built controller (see header). Official releases can't talk to
+  # the substrate v${SUBSTRATE_VERSION} platform.
+  [[ "$SUBSTRATE_ENABLED" = "true" ]] \
+    && die "SUBSTRATE_ENABLED=true requires locally built images — run: make kagent-build-deploy SUBSTRATE_ENABLED=true"
   cluster_exists || die "Cluster '${KIND_CLUSTER_NAME}' does not exist — run 'make create' first."
   kctl -n "$GW_NS" get gateway "$GW_NAME" >/dev/null 2>&1 \
     || die "Gateway '${GW_NAME}' not found — run 'make create' first."
@@ -170,8 +210,9 @@ cmd_deploy() {
 
   mirror_images
   # bash 3.2 (macOS) has no mapfile — read provider sets line by line.
-  local -a sets=()
+  local -a sets=() substrate=()
   while IFS= read -r s; do sets+=("$s"); done < <(provider_sets)
+  while IFS= read -r s; do substrate+=("$s"); done < <(substrate_sets)
 
   say "Installing kagent-crds ${KAGENT_VERSION} (upstream OCI chart)..."
   helm upgrade --install kagent-crds "${CHART_REPO}/kagent-crds" \
@@ -202,6 +243,7 @@ cmd_deploy() {
     --set "querydoc.image.registry=${REG_HOST}" \
     --set "grafana-mcp.image.registry=${REG_HOST}" --set "grafana-mcp.image.repository=mcp/grafana" \
     "${sets[@]}" \
+    ${substrate[@]+"${substrate[@]}"} \
     -f "$ROOT_DIR/kagent/values.yaml" --wait --timeout 10m >/dev/null
 
   expose_ui
@@ -221,10 +263,14 @@ cmd_build_deploy() {
   local version
   version="$(cd "$KAGENT_DIR" && git describe --tags --always | grep v)"
   say "Building kagent ${version} from ${KAGENT_DIR} into the local registry..."
+  # Same target order as the kagent repo's `build` target: the agent images
+  # (golang-adk) are pushed BEFORE the controller, whose build bakes their
+  # manifest digests into the binary (substrate ActorTemplates require
+  # digest-pinned refs).
   make -C "$KAGENT_DIR" \
     DOCKER_REGISTRY="localhost:${REG_PORT}" VERSION="$version" \
     CONTAINER_RUNTIME="$CONTAINER_RUNTIME" \
-    buildx-create build-controller build-ui build-app build-skills-init build-golang-adk
+    buildx-create build-ui build-kagent-adk build-golang-adk build-controller
 
   # Refresh Chart.yaml from the template so the chart version matches,
   # then package (pulls the vendored dep charts into the tarball), extract
@@ -240,8 +286,9 @@ cmd_build_deploy() {
   chart_dir="$tmp/kagent"
   patch_chart "$chart_dir"
 
-  local -a sets=()
+  local -a sets=() substrate=()
   while IFS= read -r s; do sets+=("$s"); done < <(provider_sets)
+  while IFS= read -r s; do substrate+=("$s"); done < <(substrate_sets)
 
   say "Installing kagent-crds (local chart ${KAGENT_DIR}/helm/kagent-crds)..."
   helm upgrade --install kagent-crds "$KAGENT_DIR/helm/kagent-crds" \
@@ -260,6 +307,7 @@ cmd_build_deploy() {
     --set database.postgres.bundled.image.tag=pg18-trixie \
     --set database.postgres.vectorEnabled=true \
     "${sets[@]}" \
+    ${substrate[@]+"${substrate[@]}"} \
     -f "$ROOT_DIR/kagent/values.yaml" --wait --timeout 10m >/dev/null
 
   expose_ui

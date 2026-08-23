@@ -9,19 +9,27 @@
 #   make test      chainsaw e2e tests against the running cluster
 #   make status    show what is running and whether DNS works
 #
+# kagent Agent Substrate (dedicated targets below):
+#   make substrate-create   cluster + substrate platform + kagent(local build) wired to it
+#   make substrate-status   ate-system pods, WorkerPools, actors
+#   make substrate-delete   remove kagent + the substrate platform
+#
 # Override any variable on the command line, e.g.:
 #   make create DOMAIN=acme.test KIND_IMAGE_VERSION=1.36.0
 
 DOMAIN              ?= internal
-KIND_CLUSTER_NAME   ?= kind
+KIND_CLUSTER_NAME   ?= kagent
 KIND_IMAGE_VERSION  ?= 1.35.0
+KIND_CONFIG         ?= kind/kind-config.yaml
 GWAPI_VERSION       ?= 1.6.0
 AGW_VERSION         ?= 0.0.0-latest-dev
 KAGENT_VERSION      ?=
+SUBSTRATE_ENABLED   ?= false
+SUBSTRATE_VERSION   ?= 0.0.20
 CONTAINER_RUNTIME   ?= $(shell command -v podman >/dev/null 2>&1 && echo podman || echo docker)
 
-export DOMAIN KIND_CLUSTER_NAME KIND_IMAGE_VERSION GWAPI_VERSION AGW_VERSION CONTAINER_RUNTIME
-export KAGENT_VERSION
+export DOMAIN KIND_CLUSTER_NAME KIND_IMAGE_VERSION KIND_CONFIG GWAPI_VERSION AGW_VERSION CONTAINER_RUNTIME
+export KAGENT_VERSION SUBSTRATE_ENABLED SUBSTRATE_VERSION
 
 KUBE_CONTEXT := kind-$(KIND_CLUSTER_NAME)
 HOST ?=
@@ -32,7 +40,8 @@ PORT ?=
 .DEFAULT_GOAL := help
 .PHONY: help all create update upgrade delete delete-cluster dns-install dns-remove \
         expose unexpose sync test kagent-deploy kagent-build-deploy kagent-delete \
-        site-deploy status kubectl-tools kagent-mcp-test
+        site-deploy status kubectl-tools kagent-mcp-test \
+        substrate-create substrate-status substrate-delete
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -126,3 +135,21 @@ kubectl-tools: ## Install kubectl plugins (kubecolor, kctx, kns)
 
 kagent-mcp-test: ## Test MCP endpoint availability and functionality (https://kagent.$(DOMAIN)/mcp)
 	@bash scripts/test-mcp.sh
+
+# --- kagent Agent Substrate ---------------------------------------------------
+# Dedicated targets: these are wrappers that set SUBSTRATE_ENABLED=true and
+# delegate to the base targets above. See scripts/85-substrate.sh for the
+# platform install details.
+
+substrate-create: ## Full stack with Agent Substrate: cluster (with substrate feature gates) + platform + kagent (local build) wired to it
+	@$(MAKE) --no-print-directory create KIND_CONFIG=kind/kind-config-substrate.yaml
+	@bash scripts/85-substrate.sh install
+	@$(MAKE) --no-print-directory kagent-build-deploy SUBSTRATE_ENABLED=true
+
+substrate-status: ## Show substrate platform + kagent health (pods, workerpools, actors)
+	@$(MAKE) --no-print-directory status
+	@bash scripts/85-substrate.sh status true
+
+substrate-delete: ## Remove kagent + the substrate platform (cluster and registry stay)
+	@$(MAKE) --no-print-directory kagent-delete
+	@bash scripts/85-substrate.sh uninstall

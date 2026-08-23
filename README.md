@@ -28,6 +28,24 @@ make test         # chainsaw e2e tests against the running cluster
 make status       # verify each layer
 ```
 
+**kagent Agent Substrate** (agents as gVisor actors that snapshot and
+rehydrate, instead of per-pod Deployments): add `SUBSTRATE_ENABLED=true` to
+any target, or use the shortcuts:
+
+```bash
+make substrate-create   # cluster + substrate platform (ate-system) + kagent wired to it
+make substrate-status   # ate-system pods, WorkerPools, actors
+make substrate-delete   # remove kagent + substrate (cluster and registry stay)
+```
+
+Substrate mode uses a separate cluster config (`kind/kind-config-substrate.yaml`)
+that enables the pod-identity feature gates substrate requires — the default
+`kind/kind-config.yaml` is untouched. Substrate mode also uses the **local
+kagent build** (`kagent-build-deploy`): the published upstream kagent
+releases predate the pod-identity wiring the controller needs to talk to
+the substrate platform. See [Agent Substrate](#kagent-agent-substrate)
+below for how it works with the local registry.
+
 `make all` is the full bootstrap in order — cluster + registry, AgentGateway
 + TLS, registry route, kagent (images mirrored into the local registry, helm
 install, UI + MCP route), personal site (build, load, manifests, route).
@@ -105,16 +123,26 @@ spec:
 | `make expose` / `make unexpose` | Register/remove one hostname (`HOST=`, `NS=`, `SVC=`, `PORT=`) |
 | `make sync` | Sync all annotated Services to hostnames (+ prune) |
 | `make status` | Show clusters, addons, registry, DNS state |
+| `make substrate-create` | `create` + kagent with Agent Substrate enabled (see below) |
+| `make substrate-status` | Substrate platform + kagent health (pods, workerpools, actors) |
+| `make substrate-delete` | Remove kagent + the substrate platform (cluster and registry stay) |
+
+Any of the above accepts `SUBSTRATE_ENABLED=true` — e.g.
+`make create SUBSTRATE_ENABLED=true` also installs the substrate platform,
+`make kagent-deploy SUBSTRATE_ENABLED=true` wires kagent to it,
+`make delete SUBSTRATE_ENABLED=true` removes substrate first.
 
 ### Variables (override on the command line)
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `DOMAIN` | `internal` | DNS zone + TLS wildcard (`*.internal`) |
-| `KIND_CLUSTER_NAME` | `kind` | Cluster name (context: `kind-kind`) |
+| `KIND_CLUSTER_NAME` | `kagent` | Cluster name (context: `kind-kagent`) |
 | `KIND_IMAGE_VERSION` | `1.35.0` | `kindest/node` version — bump + `make upgrade` |
 | `GWAPI_VERSION` | `1.6.0` | Gateway API CRDs version |
 | `AGW_VERSION` | `0.0.0-latest-dev` | AgentGateway chart version |
+| `SUBSTRATE_ENABLED` | `false` | Install + wire kagent Agent Substrate (see below) |
+| `SUBSTRATE_VERSION` | `0.0.20` | Substrate OCI chart version (ghcr) |
 | `CONTAINER_RUNTIME` | auto (podman→docker) | Runtime kind runs on |
 
 Example — a second cluster with its own zone:
@@ -153,6 +181,7 @@ Notes:
 ```
 Makefile                  lifecycle orchestration (create/update/delete/test/...)
 kind/kind-config.yaml     cluster config (ports 80/443 -> 8080/8443, registry)
+kind/kind-config-substrate.yaml  same + substrate pod-identity feature gates
 manifests/                plain YAML, no variables — kubectl apply -f works directly
   gateway.yaml            kind-infra Gateway (HTTP 8080 + HTTPS 8443 listeners)
   kagent-route.yaml       kagent.internal HTTPRoute (UI + /mcp)
@@ -170,9 +199,11 @@ scripts/
   60-register.sh          hostname registration (expose / remove / sync)
   70-test.sh              chainsaw runner behind `make test`
   80-kagent.sh            kagent deployment wrapper (see below)
+  85-substrate.sh         Agent Substrate platform wrapper (install/status/uninstall)
   90-site.sh              internal website (../baladengale.github.io) deploy
 kagent/                   wrapper defaults for deploying ../kagent
   values.yaml             customization defaults (agents off, etc.)
+  values-substrate.yaml   substrate mode: controller wiring + default WorkerPool
   env.example             template for the gitignored .env (API keys)
 tests/                    chainsaw e2e tests (see below)
 certs/                    mkcert CA + wildcard key (gitignored)
@@ -203,7 +234,7 @@ cp kagent/env.example .env   # gitignored
 **Option 1 — upstream release, no local build:**
 
 ```bash
-make kagent-deploy                       # default: 0.10.0-rc2
+make kagent-deploy                       # default: 0.10.0-rc3
 make kagent-deploy KAGENT_VERSION=0.7.9  # any published release
 ```
 
@@ -234,7 +265,69 @@ images stay cached in the registry).
 
 Customization defaults (kept here, upstream stays clean) live in
 `kagent/values.yaml` — the built-in cluster-ops agents (cilium×3,
-observability, promql) are disabled for a lean local cluster.
+observability, promql), the standalone agent charts (argo-rollouts, helm,
+istio) and grafana-mcp are disabled for a lean local cluster.
+
+## kagent Agent Substrate
+
+Agent Substrate is a Kubernetes-native runtime that snapshots idle agents and
+rehydrates them inside gVisor sandboxes ("actors") instead of running every
+agent as its own Deployment. See
+[the concept page](https://kagent.dev/docs/kagent/examples/agent-substrate/)
+for the background; the wiring here follows the kagent repo's
+`examples/substrate-openclaw/README.md`.
+
+```bash
+make substrate-create   # = create + kagent-deploy with SUBSTRATE_ENABLED=true
+make substrate-status   # ate-system pods, WorkerPools, actors
+```
+
+What happens in substrate mode:
+
+- **Cluster** (`scripts/10-create-cluster.sh` + `kind/kind-config-substrate.yaml`)
+  is created with the feature gates substrate requires
+  (`ClusterTrustBundle`, `ClusterTrustBundleProjection`,
+  `PodCertificateRequest`, `certificates.k8s.io/v1beta1`) — these can't be
+  enabled after creation, so substrate mode uses this config instead of the
+  default `kind/kind-config.yaml`.
+- **Platform** (`scripts/85-substrate.sh install`) mirrors the ateom gVisor
+  worker image into the local registry and installs `substrate-crds` +
+  `substrate` (OCI charts, `ate-system` namespace). atelet — substrate's
+  image puller — gets
+  `--localhost-registry-replacement=kind-registry.default.svc:5000`, which
+  points localhost-origin image refs at the in-cluster registry Service
+  (plain HTTP, no Gateway hop — atelet pulls images itself via
+  go-containerregistry, so the containerd `certs.d` bypass does not apply to
+  it). A one-time bootstrap then creates substrate's pod-identity CA/JWT
+  pools with the `kubectl-ate` CLI and derives the ate-api trust + auth
+  objects (skipped on re-runs — regenerating the CAs would invalidate issued
+  pod certificates).
+- **kagent** (`make kagent-build-deploy SUBSTRATE_ENABLED=true`,
+  `scripts/80-kagent.sh`) builds the `../kagent` checkout — required: the
+  published upstream releases predate the controller's pod-identity wiring
+  for substrate — switches the chart's `registry` value to `localhost:5001`
+  (kubelet still resolves it via the existing `certs.d` wiring; actor images
+  become localhost-origin so atelet rewrites them), then wires the controller
+  to the platform (`kagent/values-substrate.yaml`: `controller.substrate.*` +
+  `substrateWorkerPool`) and creates the default WorkerPool running the
+  mirrored ateom image.
+
+Create a declarative agent on substrate from the kagent UI at
+https://kagent.internal: Create → Agent → choose the Declarative type,
+runtime Go, and pick the `kagent-default` worker pool in the Sandbox
+section (the current controller compiles declarative agents into
+ActorTemplates; the legacy `SandboxAgent` kubectl CR from older docs is not
+reconciled by this build). The first golden snapshot takes about a minute;
+between requests the actor sits `Suspended` in the substrate inventory
+(View → Substrate).
+
+Tuning: `SUBSTRATE_VERSION` picks the platform chart version;
+`substrateWorkerPool.replicas` in `kagent/values-substrate.yaml` sizes the
+pool (`kubectl scale workerpool kagent-default -n kagent --replicas=3`
+works too, until the next helm upgrade).
+
+Teardown: `make substrate-delete` removes kagent and the substrate platform
+but keeps the cluster and the mirrored images.
 
 ## Hosting the internal website
 
@@ -267,7 +360,7 @@ from its GitHub releases).
 | `tests/registry` | `https://kind-registry.<DOMAIN>/v2/` returns 200 over real TLS |
 | `tests/echo-routing` | Full `make expose` → HTTPRoute accepted → `https://echo.<DOMAIN>` serves 200 → `make unexpose` removes the route |
 
-Tests assume the default `KIND_CLUSTER_NAME=kind` and `DOMAIN=internal`
+Tests assume the default `KIND_CLUSTER_NAME=kagent` and `DOMAIN=internal`
 (assertions hardcode the names); `make test` rejects other values.
 
 ```bash
@@ -323,8 +416,8 @@ kg           # kubectl get
 kd           # kubectl describe
 kctx         # switch clusters
 kns          # switch namespaces
-kkind        # kubectl --context kind-kind
-kgw          # kubectl --context kind-kind -n agentgateway-system
+kkind        # kubectl --context kind-kagent
+kgw          # kubectl --context kind-kagent -n agentgateway-system
 kpo          # kubectl get pods
 ksv          # kubectl get services
 ```

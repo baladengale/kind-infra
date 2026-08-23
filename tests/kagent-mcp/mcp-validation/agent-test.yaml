@@ -1,12 +1,11 @@
-apiVersion: v1alpha3
-kind: Agent
+apiVersion: kagent.dev/v1alpha3
+kind: SandboxAgent
 metadata:
   name: test-mcp-agent
   namespace: kagent
 spec:
+  type: Declarative
   description: "Test agent for MCP validation"
-  instructions: "You are a helpful test agent. Respond with 'MCP test successful' when asked."
-  tools:
-    - type: builtin
-      name: weather
-      description: "Get weather information"
+  declarative:
+    modelConfig: default-model-config
+    systemMessage: "You are a helpful test agent. Respond with 'MCP test successful' when asked."

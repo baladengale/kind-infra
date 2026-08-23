@@ -25,14 +25,22 @@ spec:
               metadata:
                 namespace: kagent
                 name: kagent
-          resource:
-            jsonPath:
-              path: $.spec.rules[1].matches[0].path.value
-              value: /mcp
-          resource:
-            jsonPath:
-              path: $.spec.rules[1].backendRefs[0].name
-              value: kagent-controller
+              spec:
+                rules:
+                - backendRefs:
+                  - name: kagent-ui
+                    port: 8080
+                  matches:
+                  - path:
+                      type: PathPrefix
+                      value: /
+                - backendRefs:
+                  - name: kagent-controller
+                    port: 8083
+                  matches:
+                  - path:
+                      type: PathPrefix
+                      value: /mcp
 
     - name: create-test-agent
       description: Deploy test agent for MCP invocation
@@ -41,8 +49,8 @@ spec:
             file: mcp-validation/agent-test.yaml
         - assert:
             resource:
-              apiVersion: v1alpha3
-              kind: Agent
+              apiVersion: kagent.dev/v1alpha3
+              kind: SandboxAgent
               metadata:
                 namespace: kagent
                 name: test-mcp-agent
@@ -146,4 +154,4 @@ spec:
       try:
         - script:
             content: |
-                kubectl delete -n kagent agent test-mcp-agent --ignore-not-found
+                kubectl delete -n kagent sandboxagent test-mcp-agent --ignore-not-found

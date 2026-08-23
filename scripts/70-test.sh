@@ -18,8 +18,8 @@ require kubectl curl dig
 command -v chainsaw >/dev/null 2>&1 \
   || die "chainsaw not found — install Kyverno chainsaw from https://github.com/kyverno/chainsaw/releases (NOT brew's chainsaw)."
 
-[[ "${KIND_CLUSTER_NAME}" == "kind" && "${DOMAIN}" == "internal" ]] \
-  || die "make test requires the defaults KIND_CLUSTER_NAME=kind DOMAIN=internal (assertions hardcode them)."
+[[ "${KIND_CLUSTER_NAME}" == "kagent" && "${DOMAIN}" == "internal" ]] \
+  || die "make test requires the defaults KIND_CLUSTER_NAME=kagent DOMAIN=internal (assertions hardcode them)."
 cluster_exists || die "Cluster '${KIND_CLUSTER_NAME}' does not exist — run 'make create' first."
 [[ -f "$ROOT_DIR/certs/rootCA.pem" ]] || die "Missing certs/rootCA.pem — run 'make create' first."
 
@@ -27,7 +27,7 @@ export REPO_ROOT="$ROOT_DIR"   # used by test scripts to reach make + the CA
 export KUBE_CONTEXT DOMAIN CONTAINER_RUNTIME
 
 # Chainsaw must run against the default kubeconfig (a --kube-context flag
-# would hand script steps a temp kubeconfig where `--context kind-kind`
+# would hand script steps a temp kubeconfig where `--context kind-kagent`
 # and `make expose` break). Point kubectl at our cluster, restore after.
 prev_ctx="$(kubectl config current-context 2>/dev/null || true)"
 kubectl config use-context "$KUBE_CONTEXT" >/dev/null

@@ -30,7 +30,7 @@ else
   export KIND_EXPERIMENTAL_PROVIDER="$CONTAINER_RUNTIME"
   kind create cluster \
     --name "$KIND_CLUSTER_NAME" \
-    --config "$ROOT_DIR/kind/kind-config.yaml" \
+    --config "$ROOT_DIR/$KIND_CONFIG" \
     --image "kindest/node:v${KIND_IMAGE_VERSION}"
 fi
 
