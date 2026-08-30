@@ -1,0 +1,35 @@
+# Dedicated HTTPRoute for the kagent controller API (CLI + TUI + dashboard).
+#
+# The consolidated kagent route (kagent-route.yaml) sends everything except
+# /mcp to the UI, and the CLI/TUI cannot send a Host header override — so the
+# controller API needs its own hostname to be reachable in full. Point the
+# CLI at it via ~/.kagent/config.yaml:
+#   kagent_url: http://kagent-api.internal
+#
+# Applied by scripts/80-kagent.sh (`make kagent-deploy`).
+#
+# Plain YAML — no variables: kubectl apply -f manifests/kagent-api-route.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: kagent-api
+  namespace: kagent
+  labels:
+    app.kubernetes.io/managed-by: kind-infra
+  annotations:
+    kind-infra.dev/host: kagent-api
+spec:
+  parentRefs:
+    - name: kind-infra
+      namespace: agentgateway-system
+  hostnames:
+    - kagent-api.internal
+  rules:
+    # Controller API (catch-all): gRPC/A2A endpoints, /health, /version, /mcp.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: kagent-controller
+          port: 8083

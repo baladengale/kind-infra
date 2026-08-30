@@ -59,6 +59,7 @@ bash "$ROOT_DIR/scripts/90-site.sh"
 echo ""
 say "All up:"
 ok "kagent UI + MCP    https://kagent.${DOMAIN}"
+ok "kagent CLI/TUI API http://kagent-api.${DOMAIN}  (kagent_url in ~/.kagent/config.yaml)"
 ok "personal site      https://baladengale.${DOMAIN}"
 ok "registry           https://kind-registry.${DOMAIN}  (docker push kind-registry.${DOMAIN}/img:tag)"
 if [[ "$SUBSTRATE_ENABLED" = "true" ]]; then

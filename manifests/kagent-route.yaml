@@ -2,6 +2,9 @@
 # All paths go to the UI except /mcp, which goes to the controller.
 # Applied by scripts/80-kagent.sh (`make kagent-deploy`).
 #
+# The full controller API for the CLI/TUI is exposed separately on its own
+# hostname — see kagent-api-route.yaml.
+#
 # Plain YAML — no variables: kubectl apply -f manifests/kagent-route.yaml
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
