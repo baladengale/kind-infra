@@ -38,3 +38,22 @@ providers:
     config:
       # DeepSeek Anthropic-compatible API endpoint
       baseUrl: https://api.deepseek.com/anthropic
+
+# LLM-based session summarization (context compaction): when a session grows,
+# older events are summarized by the CHEAP AgentGateway tier (Ark Seed 2.0 Mini
+# primary, DeepSeek fallback) instead of the agent's own (pro) model.
+# Applied via the agent subcharts' `compaction` values -> Agent CR
+# spec.declarative.context.compaction.summarizer.
+k8s-agent:
+  compaction:
+    compactionInterval: 5
+    overlapSize: 2
+    summarizer:
+      modelConfig: agw-cheap-model-config
+
+kgateway-agent:
+  compaction:
+    compactionInterval: 5
+    overlapSize: 2
+    summarizer:
+      modelConfig: agw-cheap-model-config

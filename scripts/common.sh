@@ -29,6 +29,9 @@ AGW_VERSION=${AGW_VERSION:-0.0.0-latest-dev}
 GW_NS=${GW_NS:-agentgateway-system}
 GW_NAME=${GW_NAME:-kind-infra}
 
+# kagent namespace (used by multiple scripts)
+KAGENT_NS=${KAGENT_NS:-kagent}
+
 # kagent Agent Substrate (see scripts/85-substrate.sh + kagent/values-substrate.yaml).
 # Substrate v0.0.20 pairs with kagent >= 0.10.0-rc3 (chart tags on ghcr).
 SUBSTRATE_ENABLED=${SUBSTRATE_ENABLED:-false}

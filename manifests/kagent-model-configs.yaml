@@ -1,0 +1,62 @@
+# kagent ModelConfigs — applied on top of the Helm-provided default.
+#
+# Four ModelConfigs are available after setup:
+#   1. default-model-config   — Helm-provided, DeepSeek direct (cheapest DeepSeek)
+#   2. ark-model-config       — Ark direct, cheapest Ark model (Seed 2.0 Mini)
+#   3. agw-model-config       — via AgentGateway PRO tier:
+#                               Ark ark-code-latest primary -> DeepSeek fallback
+#   4. agw-cheap-model-config — via AgentGateway CHEAP tier:
+#                               Ark seed-2-0-mini primary -> DeepSeek fallback
+#
+# For LLM-based session summarization, reference agw-cheap-model-config in the
+# agent's context.compaction.summarizer (see kagent/values.yaml).
+#
+# Applied by scripts/35-agentgateway-llm.sh.
+---
+# Ark direct ModelConfig — cheapest Ark model via the Anthropic-compatible
+# coding endpoint. For the pro model through the gateway use agw-model-config.
+apiVersion: kagent.dev/v1alpha2
+kind: ModelConfig
+metadata:
+  name: ark-model-config
+  namespace: kagent
+spec:
+  provider: Anthropic
+  model: seed-2-0-mini-260428
+  apiKeySecret: kagent-anthropic-ark
+  apiKeySecretKey: ANTHROPIC_API_KEY
+  anthropic:
+    baseUrl: https://ark.ap-southeast.bytepluses.com/api/coding
+---
+# AgentGateway PRO-tier ModelConfig — requests route through AgentGateway to
+# the agw-llm-pro backend (Ark ark-code-latest primary, DeepSeek fallback on
+# 429/5xx). The API key here is a placeholder for the controller's client;
+# AgentGateway injects the real per-backend key.
+apiVersion: kagent.dev/v1alpha2
+kind: ModelConfig
+metadata:
+  name: agw-model-config
+  namespace: kagent
+spec:
+  provider: Anthropic
+  model: ark-code-latest
+  apiKeySecret: kagent-anthropic
+  apiKeySecretKey: ANTHROPIC_API_KEY
+  anthropic:
+    baseUrl: http://kind-infra.agentgateway-system.svc.cluster.local:8080
+---
+# AgentGateway CHEAP-tier ModelConfig — routes to the agw-llm-cheap backend
+# (Ark Seed 2.0 Mini primary, DeepSeek fallback). Use this for summarization
+# and other high-volume/low-complexity workloads.
+apiVersion: kagent.dev/v1alpha2
+kind: ModelConfig
+metadata:
+  name: agw-cheap-model-config
+  namespace: kagent
+spec:
+  provider: Anthropic
+  model: seed-2-0-mini-260428
+  apiKeySecret: kagent-anthropic
+  apiKeySecretKey: ANTHROPIC_API_KEY
+  anthropic:
+    baseUrl: http://kind-infra.agentgateway-system.svc.cluster.local:8080

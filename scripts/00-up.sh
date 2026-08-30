@@ -29,8 +29,8 @@ set -a; . "$ROOT_DIR/.env"; set +a
 [[ -n "${ANTHROPIC_API_KEY:-}" ]] \
   || die "ANTHROPIC_API_KEY not set in $ROOT_DIR/.env — fill it in (see README)."
 
-total=5
-[[ "$SUBSTRATE_ENABLED" = "true" ]] && total=6
+total=6
+[[ "$SUBSTRATE_ENABLED" = "true" ]] && total=7
 step=0
 next() { step=$((step + 1)); say "Step $step/$total: $*"; }
 
@@ -51,6 +51,8 @@ if [[ "$SUBSTRATE_ENABLED" = "true" ]]; then
 else
   bash "$ROOT_DIR/scripts/80-kagent.sh" deploy
 fi
+next "AgentGateway LLM router + additional ModelConfigs..."
+bash "$ROOT_DIR/scripts/35-agentgateway-llm.sh"
 next "personal site (build, load, manifests, route)..."
 bash "$ROOT_DIR/scripts/90-site.sh"
 

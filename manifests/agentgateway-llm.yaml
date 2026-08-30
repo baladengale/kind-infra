@@ -1,0 +1,268 @@
+# AgentGateway LLM router — tiered routing with primary/fallback failover.
+#
+# Architecture (two tiers, each with Ark primary -> DeepSeek fallback):
+#
+#   kagent-controller -> AgentGateway proxy -> agw-llm-routing HTTPRoute
+#     -> model seed-2-0-mini-* (cheap tier) -> agw-llm-cheap
+#          group 1 (primary):  Ark  seed-2-0-mini-260428
+#          group 2 (fallback): DeepSeek deepseek-chat
+#     -> anything else (pro tier)           -> agw-llm-pro
+#          group 1 (primary):  Ark  ark-code-latest
+#          group 2 (fallback): DeepSeek deepseek-chat
+#
+# Failover: within each backend, priority group 1 is used until it is evicted
+# as unhealthy (429 rate limit or 5xx — see agw-llm-*-health policies); traffic
+# then moves to group 2 until group 1's eviction expires (Retry-After on 429s
+# is honoured). The retry policy on the HTTPRoute makes the failover
+# transparent: the failed attempt is retried against the fallback within the
+# same request.
+#
+# Pricing (approx, per M tokens):
+#   ark-code-latest      pro tier  (coding plan, auto routing)
+#   seed-2-0-mini-260428 cheap tier ~$0.10 in / $0.40 out
+#   deepseek-chat        fallback   ~$0.28 in / $0.42 out
+#
+# Applied by scripts/35-agentgateway-llm.sh (make agentgateway-llm-setup).
+#
+# Prerequisites:
+#   - AgentGateway installed (scripts/30-gateway.sh)
+#   - Secrets agw-ark-secret + agw-deepseek-secret (created by the setup script)
+---
+# PreRouting policy: extract the model name from the JSON request body into the
+# x-model header so the HTTPRoute can match on it. This must target the Gateway
+# (not an HTTPRoute) so the header is available before route selection.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: agw-extract-model
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: kind-infra
+  traffic:
+    phase: PreRouting
+    transformation:
+      request:
+        set:
+          - name: "x-model"
+            value: 'json(request.body).model'
+---
+# PRO tier backend — Ark primary, DeepSeek fallback
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: agw-llm-pro
+  namespace: agentgateway-system
+spec:
+  ai:
+    groups:
+      # Priority group 1 (primary): Ark coding plan
+      - providers:
+          - name: ark-pro
+            custom:
+              model: ark-code-latest
+              formats:
+                - type: Messages
+                - type: Completions
+            host: ark.ap-southeast.bytepluses.com
+            port: 443
+            path: /api/coding/v1/messages
+            policies:
+              auth:
+                credentials:
+                  - location:
+                      header:
+                        name: x-api-key
+                    secretRef:
+                      name: agw-ark-secret
+                      key: Authorization
+              tls:
+                alpnProtocols:
+                  - h2
+                  - http/1.1
+      # Priority group 2 (fallback): DeepSeek — used only when Ark is evicted
+      - providers:
+          - name: deepseek-fallback
+            custom:
+              model: deepseek-chat
+              formats:
+                - type: Messages
+                - type: Completions
+            host: api.deepseek.com
+            port: 443
+            path: /anthropic/v1/messages
+            policies:
+              auth:
+                credentials:
+                  - location:
+                      header:
+                        name: x-api-key
+                    secretRef:
+                      name: agw-deepseek-secret
+                      key: Authorization
+              tls:
+                alpnProtocols:
+                  - h2
+                  - http/1.1
+---
+# CHEAP tier backend — cheapest Ark model primary, DeepSeek fallback
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: agw-llm-cheap
+  namespace: agentgateway-system
+spec:
+  ai:
+    groups:
+      # Priority group 1 (primary): Ark cheapest (Seed 2.0 Mini)
+      - providers:
+          - name: ark-cheap
+            custom:
+              model: seed-2-0-mini-260428
+              formats:
+                - type: Messages
+                - type: Completions
+            host: ark.ap-southeast.bytepluses.com
+            port: 443
+            path: /api/coding/v1/messages
+            policies:
+              auth:
+                credentials:
+                  - location:
+                      header:
+                        name: x-api-key
+                    secretRef:
+                      name: agw-ark-secret
+                      key: Authorization
+              tls:
+                alpnProtocols:
+                  - h2
+                  - http/1.1
+      # Priority group 2 (fallback): DeepSeek cheapest
+      - providers:
+          - name: deepseek-fallback
+            custom:
+              model: deepseek-chat
+              formats:
+                - type: Messages
+                - type: Completions
+            host: api.deepseek.com
+            port: 443
+            path: /anthropic/v1/messages
+            policies:
+              auth:
+                credentials:
+                  - location:
+                      header:
+                        name: x-api-key
+                    secretRef:
+                      name: agw-deepseek-secret
+                      key: Authorization
+              tls:
+                alpnProtocols:
+                  - h2
+                  - http/1.1
+---
+# Health policy: evict a provider on 429 (rate limit) or 5xx so traffic moves
+# to the next priority group. Retry-After headers on 429s override the duration.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: agw-llm-pro-health
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: agw-llm-pro
+  backend:
+    health:
+      unhealthyCondition: "response.code >= 500 || response.code == 429"
+      eviction:
+        duration: 10s
+        consecutiveFailures: 1
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: agw-llm-cheap-health
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: agw-llm-cheap
+  backend:
+    health:
+      unhealthyCondition: "response.code >= 500 || response.code == 429"
+      eviction:
+        duration: 10s
+        consecutiveFailures: 1
+---
+# Retry policy: makes the priority-group failover transparent — a request that
+# hits an evicted/failing primary is retried against the fallback within the
+# same request instead of surfacing the 429/5xx to the caller.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: agw-llm-retry
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agw-llm-routing
+  traffic:
+    retry:
+      attempts: 2
+      backoff: 1s
+      codes:
+        - 429
+        - 500
+---
+# HTTPRoute: tier-based routing on the model name extracted by PreRouting.
+# Rule order matters — the cheap-tier match must precede the catch-all.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: agw-llm-routing
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+    - name: kind-infra
+  rules:
+    # CHEAP tier: Seed 2.0 Mini requests -> cheap backend
+    # (agentgateway/Envoy regex is full-match, so the .* tail is required)
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/messages
+          headers:
+            - type: RegularExpression
+              name: x-model
+              value: "^seed-2-0-mini.*"
+        - path:
+            type: PathPrefix
+            value: /chat/completions
+          headers:
+            - type: RegularExpression
+              name: x-model
+              value: "^seed-2-0-mini.*"
+      backendRefs:
+        - name: agw-llm-cheap
+          group: agentgateway.dev
+          kind: AgentgatewayBackend
+    # PRO tier (catch-all): everything else -> pro backend
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/messages
+        - path:
+            type: PathPrefix
+            value: /chat/completions
+      backendRefs:
+        - name: agw-llm-pro
+          group: agentgateway.dev
+          kind: AgentgatewayBackend

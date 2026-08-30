@@ -74,7 +74,6 @@ DEP_IMAGES=(
 )
 
 # --- cluster-side settings ---------------------------------------------------
-KAGENT_NS="kagent"
 KAGENT_UI_HOST="kagent"                # -> https://kagent.${DOMAIN}
 KAGENT_DIR="${KAGENT_DIR:-$ROOT_DIR/../kagent}"
 REG_HOST="kind-registry.${DOMAIN}"

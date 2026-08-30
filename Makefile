@@ -29,7 +29,7 @@ SUBSTRATE_VERSION   ?= 0.0.20
 CONTAINER_RUNTIME   ?= $(shell command -v podman >/dev/null 2>&1 && echo podman || echo docker)
 
 export DOMAIN KIND_CLUSTER_NAME KIND_IMAGE_VERSION KIND_CONFIG GWAPI_VERSION AGW_VERSION CONTAINER_RUNTIME
-export KAGENT_VERSION SUBSTRATE_ENABLED SUBSTRATE_VERSION
+export KAGENT_VERSION SUBSTRATE_ENABLED SUBSTRATE_VERSION ANTHROPIC_ARK_AUTH_TOKEN
 
 KUBE_CONTEXT := kind-$(KIND_CLUSTER_NAME)
 HOST ?=
@@ -40,7 +40,7 @@ PORT ?=
 .DEFAULT_GOAL := help
 .PHONY: help all create update upgrade delete delete-cluster dns-install dns-remove \
         expose unexpose sync test kagent-deploy kagent-build-deploy kagent-delete \
-        site-deploy status kubectl-tools kagent-mcp-test \
+        agentgateway-llm-setup site-deploy status kubectl-tools kagent-mcp-test \
         substrate-create substrate-status substrate-delete
 
 help: ## Show this help
@@ -60,9 +60,10 @@ create: ## Create everything: cluster, registry, AgentGateway, registry route
 	@echo "  -> https://myapp.$(DOMAIN)"
 
 update: ## Re-apply addons on the existing cluster (picks up version bumps)
-	@bash scripts/30-gateway.sh
-	@bash scripts/50-registry.sh
-	@echo "Update complete."
+		@bash scripts/30-gateway.sh
+		@bash scripts/50-registry.sh
+		@bash scripts/35-agentgateway-llm.sh
+		@echo "Update complete."
 
 upgrade: ## Recreate the cluster with the current KIND_IMAGE_VERSION (destructive)
 	@read -p "Recreate cluster '$(KIND_CLUSTER_NAME)' with kindest/node:v$(KIND_IMAGE_VERSION)? Workloads are lost. [y/N] " ans; \
@@ -112,8 +113,11 @@ kagent-build-deploy: ## Build ../kagent, push to local registry, deploy the loca
 kagent-delete: ## Uninstall kagent and remove the kagent.$(DOMAIN) route
 	@bash scripts/80-kagent.sh delete
 
+agentgateway-llm-setup: ## Configure AgentGateway LLM routing + additional ModelConfigs (ark, agw)
+		@bash scripts/35-agentgateway-llm.sh
+
 site-deploy: ## Build + deploy the internal website (../baladengale.github.io) at https://baladengale.$(DOMAIN)
-	@bash scripts/90-site.sh
+		@bash scripts/90-site.sh
 
 status: ## Show clusters, addons, registry and DNS state
 	@echo "== clusters =="; kind get clusters 2>/dev/null || echo "(none)"
