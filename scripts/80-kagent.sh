@@ -178,10 +178,12 @@ mirror_images() {
 expose_ui() {
   say "Exposing kagent UI + MCP at https://${KAGENT_UI_HOST}.${DOMAIN}..."
   # Remove legacy separate routes if they exist, then apply the consolidated
-  # route (UI + /mcp) from the static manifest.
+  # route (UI + /mcp) and the controller-API route (kagent-api.internal, for
+  # the CLI/TUI) from the static manifests.
   kctl -n "$KAGENT_NS" delete httproute kagent-mcp --ignore-not-found >/dev/null 2>&1 || true
   apply_manifest kagent-route.yaml
-  refresh_gateway_cert   # explicit SAN for the hostname
+  apply_manifest kagent-api-route.yaml
+  refresh_gateway_cert   # explicit SANs for both hostnames
 }
 
 probe_ui() {
@@ -315,10 +317,11 @@ cmd_build_deploy() {
 
 cmd_delete() {
   require helm
-  say "Removing kagent hostname route..."
+  say "Removing kagent hostname routes..."
   # Remove the consolidated kagent HTTPRoute
   kubectl -n "$KAGENT_NS" delete httproute kagent --ignore-not-found >/dev/null 2>&1 || true
-  # Also remove any legacy kagent-mcp route
+  # Also remove the controller-API route and any legacy kagent-mcp route
+  kubectl -n "$KAGENT_NS" delete httproute kagent-api --ignore-not-found >/dev/null 2>&1 || true
   kubectl -n "$KAGENT_NS" delete httproute kagent-mcp --ignore-not-found >/dev/null 2>&1 || true
   say "Uninstalling kagent releases..."
   helm uninstall kagent     --namespace "$KAGENT_NS" --kube-context "$KUBE_CONTEXT" >/dev/null 2>&1 || true
