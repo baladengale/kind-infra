@@ -197,6 +197,17 @@ probe_ui() {
   esac
 }
 
+# Provision the AgentGateway LLM routing + agw/ark ModelConfigs and secrets
+# BEFORE the kagent controller starts. The agents reference agw-cheap-model-
+# config as their summarizer; on a fresh cluster the controller can't compile
+# the Agents until that ModelConfig exists (their deployments are never
+# created and helm --wait times out on Agent readiness). Requires kagent-crds
+# and the Gateway to be installed first; safe to run again later (idempotent).
+provision_llm_configs() {
+  bash "$ROOT_DIR/scripts/35-agentgateway-llm.sh" \
+    || warn "agentgateway-llm setup failed — agents stay InProgress until it succeeds (re-run: make agentgateway-llm-setup)"
+}
+
 cmd_deploy() {
   require kubectl helm "$CONTAINER_RUNTIME" curl
   # Substrate needs the podcert wiring that only exists in the local chart +
@@ -219,6 +230,8 @@ cmd_deploy() {
   helm upgrade --install kagent-crds "${CHART_REPO}/kagent-crds" \
     --version "$KAGENT_VERSION" --namespace "$KAGENT_NS" --create-namespace \
     --kube-context "$KUBE_CONTEXT" --wait --timeout 5m >/dev/null
+
+  provision_llm_configs
 
   # Pull the upstream chart, extract, and patch it (see patch_chart).
   local tmp chart_dir
@@ -295,6 +308,8 @@ cmd_build_deploy() {
   helm upgrade --install kagent-crds "$KAGENT_DIR/helm/kagent-crds" \
     --namespace "$KAGENT_NS" --create-namespace \
     --kube-context "$KUBE_CONTEXT" --wait --timeout 5m >/dev/null
+
+  provision_llm_configs
 
   say "Installing kagent ${version} (local chart, images from ${REG_HOST})..."
   helm upgrade --install kagent "$chart_dir" \

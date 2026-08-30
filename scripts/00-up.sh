@@ -46,12 +46,15 @@ if [[ "$SUBSTRATE_ENABLED" = "true" ]]; then
 fi
 next "kagent (mirror/build images, helm install, UI + MCP route)..."
 # Substrate needs the locally built controller (see scripts/80-kagent.sh).
+# The deploy also provisions the agentgateway LLM configs + agw ModelConfigs
+# right after kagent-crds, BEFORE the controller/agents start — agents
+# reference agw-cheap-model-config as summarizer and won't compile without it.
 if [[ "$SUBSTRATE_ENABLED" = "true" ]]; then
   bash "$ROOT_DIR/scripts/80-kagent.sh" build-deploy
 else
   bash "$ROOT_DIR/scripts/80-kagent.sh" deploy
 fi
-next "AgentGateway LLM router + additional ModelConfigs..."
+next "AgentGateway LLM router re-apply + acceptance check..."
 bash "$ROOT_DIR/scripts/35-agentgateway-llm.sh"
 next "personal site (build, load, manifests, route)..."
 bash "$ROOT_DIR/scripts/90-site.sh"
