@@ -6,8 +6,9 @@
 # and adds the default WorkerPool.
 #
 # In this mode scripts/80-kagent.sh also switches the chart's `registry` value
-# to localhost:PORT so substrate's atelet can rewrite image refs to the
-# in-cluster registry Service (see scripts/85-substrate.sh).
+# to localhost:PORT and sets substrateWorkerPool.workerImage to the mirrored
+# ateom image, so substrate's atelet can rewrite image refs to the in-cluster
+# registry Service (see scripts/85-substrate.sh).
 
 controller:
   substrate:
@@ -16,12 +17,22 @@ controller:
     # controller's projected ServiceAccount token (the chart renders the
     # RBAC + token projection when this block is enabled).
     ateApiEndpoint: dns:///api.ate-system.svc:443
+    # A2A traffic to Actors is proxied through the substrate atenet router.
+    # The chart only derives this when substrate is a kagent subchart; we
+    # install the platform standalone (ate-system), so set it explicitly.
+    atenetRouterURL: http://atenet-router.ate-system.svc:80
+    # Where AgentInstance Actors are scheduled. Explicit here so the default
+    # WorkerPool below is unambiguous even if chart defaults change.
+    defaultWorkerPool:
+      name: kagent-default
 
 # Platform capacity for substrate actors — the WorkerPool runs the ateom
-# (gVisor) workers that SandboxAgents and AgentHarnesses are scheduled onto.
-# ateomImage is versioned and set by scripts/80-kagent.sh to the local
-# registry mirror, referenced as localhost:PORT for the atelet rewrite.
+# (gVisor) workers that AgentInstances are scheduled onto. The chart's
+# kagent.dev/worker-pool label on this pool is how generated ActorTemplates
+# select it. workerImage is versioned and set by scripts/80-kagent.sh to the
+# local registry mirror, referenced as localhost:PORT for the atelet rewrite.
 substrateWorkerPool:
   create: true
-  replicas: 1
+  name: kagent-default
+  replicas: 2
   sandboxClass: gvisor

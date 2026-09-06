@@ -11,7 +11,7 @@
 # dials ate-api at startup, so this platform MUST be installed and healthy
 # before kagent is deployed with substrate enabled.
 #
-# Substrate v0.0.20 runs its own pod-identity CA (podcertificate-controller,
+# Substrate runs its own pod-identity CA (podcertificate-controller,
 # ClusterTrustBundles) and an actor-identity CA. On a bare cluster those CAs
 # don't exist yet, so a one-time bootstrap is required after the first chart
 # install — the `kubectl-ate` CLI creates the pool secrets, then the actor-id
@@ -19,6 +19,12 @@
 # kagent repo's E2E CI, .github/workflows/ci.yaml). The bootstrap is skipped
 # when the pools already exist (regenerating them would invalidate issued
 # pod certs), so re-runs are safe.
+#
+# On kubernetes >= 1.34 the podcert APIs (certificates.k8s.io/v1beta1 +
+# ClusterTrustBundle/ClusterTrustBundleProjection/PodCertificateRequest gates)
+# are beta-off by default; install first live-patches older clusters (see
+# ensure_podcert_apis below) — clusters created with
+# kind/kind-config-substrate.yaml already have them.
 #
 # Modes:
 #   install    mirror the ateom image into the local registry, then install
@@ -36,6 +42,81 @@ SUBSTRATE_CHART_REPO="oci://ghcr.io/kagent-dev/substrate/helm" # ${SUBSTRATE_CHA
 SUBSTRATE_ATEOM_SRC="ghcr.io/kagent-dev/substrate/ateom-gvisor:v${SUBSTRATE_VERSION}"
 SUBSTRATE_ATEOM_LOCAL="${REG_HOST}/kagent-dev/substrate/ateom-gvisor:v${SUBSTRATE_VERSION}"
 PODCERT_NS="podcertificate-controller-system"
+
+# Substrate's pod-identity layer (podCertificate / ClusterTrustBundle
+# projections) is BETA-off by default on kubernetes >= 1.34: the
+# certificates.k8s.io/v1beta1 API and three feature gates must be enabled on
+# BOTH the API server and the kubelet. Clusters created with
+# kind/kind-config-substrate.yaml already have them; this live-patches older
+# running clusters so the platform does not require a cluster recreation.
+CERTAPI_GATES="ClusterTrustBundle=true,ClusterTrustBundleProjection=true,PodCertificateRequest=true"
+
+cert_api_served() {
+  kctl get --raw /apis/certificates.k8s.io/v1beta1 >/dev/null 2>&1
+}
+
+ensure_podcert_apis() {
+  if cert_api_served; then
+    ok "certificates.k8s.io/v1beta1 already served"
+    return 0
+  fi
+
+  local node
+  node="${KIND_CLUSTER_NAME}-control-plane"
+  "$CONTAINER_RUNTIME" inspect "$node" >/dev/null 2>&1 \
+    || die "node container '${node}' not found — cannot enable the podcert APIs live"
+
+  say "Enabling certificates.k8s.io/v1beta1 + podcert feature gates (live patch)..."
+
+  # --- API server static pod manifest -------------------------------------
+  # kind renders an empty `- --runtime-config=`; fill it. Otherwise append to
+  # an existing value, or insert a new flag next to a stable anchor.
+  "$CONTAINER_RUNTIME" exec "$node" sh -c '
+    f=/etc/kubernetes/manifests/kube-apiserver.yaml
+    grep -q "certificates.k8s.io/v1beta1" "$f" && exit 0
+    if grep -q "^    - --runtime-config=$" "$f"; then
+      sed -i "s|^    - --runtime-config=$|    - --runtime-config=certificates.k8s.io/v1beta1=true|" "$f"
+    elif grep -q -- "--runtime-config=" "$f"; then
+      sed -i "s|^\(    - --runtime-config=.*\)$|\1,certificates.k8s.io/v1beta1=true|" "$f"
+    else
+      sed -i "/^    - --service-account-key-file=/i\\    - --runtime-config=certificates.k8s.io/v1beta1=true" "$f"
+    fi
+    if grep -q -- "--feature-gates=" "$f"; then
+      grep -q "ClusterTrustBundleProjection=true" "$f" || \
+        sed -i "s|^\(    - --feature-gates=.*\)$|\1,'"${CERTAPI_GATES}"'|" "$f"
+    else
+      sed -i "/^    - --runtime-config=certificates/i\\    - --feature-gates=${CERTAPI_GATES}" "$f"
+    fi
+  '
+  # --- kubelet feature gates ------------------------------------------------
+  # The kubelet's gate is ALSO named PodCertificateRequest (there is no
+  # PodCertificate gate — an unknown name panics kubelet at startup), and
+  # ClusterTrustBundleProjection depends on ClusterTrustBundle.
+  "$CONTAINER_RUNTIME" exec "$node" sh -c '
+    f=/var/lib/kubelet/config.yaml
+    grep -q "^featureGates:" "$f" && exit 0
+    cp "$f" "$f.pre-substrate-bak"
+    printf "featureGates:\n  ClusterTrustBundle: true\n  ClusterTrustBundleProjection: true\n  PodCertificateRequest: true\n" >> "$f"
+    systemctl restart kubelet
+  '
+  say "Waiting for the API server to restart with the new flags..."
+  local i
+  for i in $(seq 1 24); do
+    sleep 5
+    cert_api_served && break
+    [[ "$i" = 24 ]] && die "certificates.k8s.io/v1beta1 not served after 2m — check kube-apiserver logs in '${node}'"
+  done
+  ok "podcert APIs enabled"
+
+  # Workloads created while the gates were off keep pod templates with the
+  # projected volume sources stripped out — a chart re-apply fixes them, a
+  # rollout restart does not. If a broken platform install exists, remove it
+  # so the install below recreates everything with intact templates.
+  if platform_installed; then
+    warn "substrate was installed before the podcert APIs were enabled — reinstalling it"
+    helm uninstall substrate --namespace "$SUBSTRATE_NS" --kube-context "$KUBE_CONTEXT" >/dev/null 2>&1 || true
+  fi
+}
 
 manifest_cached() { # <repo> <tag> — image already in the local registry?
   curl -sf -o /dev/null \
@@ -153,6 +234,8 @@ cmd_install() {
     || die "Missing $ROOT_DIR/certs/rootCA.pem — run 'bash scripts/30-gateway.sh' first."
 
   mirror_ateom
+
+  ensure_podcert_apis
 
   say "Installing substrate-crds ${SUBSTRATE_VERSION} (upstream OCI chart)..."
   helm upgrade --install substrate-crds "${SUBSTRATE_CHART_REPO}/substrate-crds" \

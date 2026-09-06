@@ -35,7 +35,7 @@ KAGENT_NS=${KAGENT_NS:-kagent}
 # kagent Agent Substrate (see scripts/85-substrate.sh + kagent/values-substrate.yaml).
 # Substrate v0.0.20 pairs with kagent >= 0.10.0-rc3 (chart tags on ghcr).
 SUBSTRATE_ENABLED=${SUBSTRATE_ENABLED:-false}
-SUBSTRATE_VERSION=${SUBSTRATE_VERSION:-0.0.20}
+SUBSTRATE_VERSION=${SUBSTRATE_VERSION:-0.0.25}
 SUBSTRATE_NS=${SUBSTRATE_NS:-ate-system}
 # WorkerPool ateom image, referenced as localhost:PORT so substrate's atelet
 # can rewrite it (--localhost-registry-replacement) to the in-cluster registry.

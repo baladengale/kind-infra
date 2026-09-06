@@ -122,7 +122,7 @@ substrate_sets() {
   # other pod image is unaffected.
   printf '%s\n' \
     --set "registry=localhost:${REG_PORT}" \
-    --set "substrateWorkerPool.ateomImage=${SUBSTRATE_ATEOM_IMAGE}" \
+    --set "substrateWorkerPool.workerImage=${SUBSTRATE_ATEOM_IMAGE}" \
     -f "$ROOT_DIR/kagent/values-substrate.yaml"
 }
 

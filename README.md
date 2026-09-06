@@ -287,9 +287,11 @@ What happens in substrate mode:
 - **Cluster** (`scripts/10-create-cluster.sh` + `kind/kind-config-substrate.yaml`)
   is created with the feature gates substrate requires
   (`ClusterTrustBundle`, `ClusterTrustBundleProjection`,
-  `PodCertificateRequest`, `certificates.k8s.io/v1beta1`) — these can't be
-  enabled after creation, so substrate mode uses this config instead of the
-  default `kind/kind-config.yaml`.
+  `PodCertificateRequest`, `certificates.k8s.io/v1beta1`) — beta-off by
+  default on kubernetes >= 1.34. Clusters created with the default config
+  don't need to be recreated: `scripts/85-substrate.sh install` detects the
+  missing API and live-patches the kube-apiserver static manifest + kubelet
+  feature gates, then restarts both in place.
 - **Platform** (`scripts/85-substrate.sh install`) mirrors the ateom gVisor
   worker image into the local registry and installs `substrate-crds` +
   `substrate` (OCI charts, `ate-system` namespace). atelet — substrate's
@@ -328,6 +330,11 @@ works too, until the next helm upgrade).
 
 Teardown: `make substrate-delete` removes kagent and the substrate platform
 but keeps the cluster and the mirrored images.
+
+Full setup details — what ate-system needs (podcert API gating, CA/JWT pool
+bootstrap, controller wiring, the default `kagent-default` WorkerPool) and
+troubleshooting notes from real runs — live in
+[docs/substrate-kagent.md](docs/substrate-kagent.md).
 
 ## Hosting the internal website
 

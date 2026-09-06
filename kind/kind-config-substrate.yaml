@@ -2,9 +2,11 @@
 #
 # Identical to kind-config.yaml plus the feature gates substrate's pod-identity
 # layer requires (ClusterTrustBundle, ClusterTrustBundleProjection,
-# PodCertificateRequest) and the certificates.k8s.io/v1beta1 API. These cannot
-# be enabled after the cluster is created, so `make substrate-create` uses this
-# config instead of the default one.
+# PodCertificateRequest) and the certificates.k8s.io/v1beta1 API. Clusters
+# created with `make substrate-create` use this config so the gates are on
+# from first boot; scripts/85-substrate.sh can also live-patch an existing
+# cluster that predates it (patching kube-apiserver's static manifest and the
+# kubelet config, then restarting both).
 #
 # Keep this file in sync with kind-config.yaml when ports/labels change.
 kind: Cluster
