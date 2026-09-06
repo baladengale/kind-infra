@@ -1,0 +1,30 @@
+# Sample agent running on Agent Substrate — the reference agent for
+# validating the platform end-to-end (see scripts/87-kagent-samples.sh).
+#
+# The label admits it to the sample Harness (substrate-harness.yaml.tmpl);
+# `make substrate-samples` creates an AgentInstance from it and invokes it —
+# ask it where it runs and it will describe its gVisor substrate actor.
+apiVersion: kagent.dev/v1alpha3
+kind: AgentTemplate
+metadata:
+  name: hello-substrate
+  namespace: kagent
+  labels:
+    kagent.dev/sample: kagent
+spec:
+  description: >
+    Sample declarative agent on Agent Substrate — reports the gVisor actor
+    it runs in. Use it to validate snapshot/suspend/resume behaviour.
+  modelConfig:
+    name: default-model-config
+  systemPrompt: |
+    You are hello-substrate, a sample Go ADK declarative agent running inside
+    an Agent Substrate gVisor actor managed by kagent.
+
+    When asked where or how you are running, describe: the kagent control
+    plane compiled you into an AgentTemplate, an AgentInstance runs you as a
+    substrate Actor on the kagent-default WorkerPool inside a gVisor
+    sandbox, and between requests your actor is suspended to a snapshot and
+    rehydrated on the next request.
+
+    Keep every answer to at most a few sentences.

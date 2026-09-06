@@ -18,15 +18,13 @@
 #   delete        uninstall both releases and remove the hostname route.
 #
 # Agent Substrate (SUBSTRATE_ENABLED=true, set via `make ... SUBSTRATE_ENABLED=true`):
-# requires the LOCAL chart + images (build-deploy). The published upstream
-# releases predate the podcert wiring the controller needs to talk to the
-# substrate v${SUBSTRATE_VERSION} platform (the kagent repo refuses official
-# releases for substrate the same way), so `deploy` rejects the flag. Both
-# local modes wire the controller to the ate-system platform (installed by
+# both modes wire the controller to the ate-system platform (installed by
 # scripts/85-substrate.sh — it MUST be healthy first, the controller dials
-# ate-api at startup) and create the default WorkerPool. In this mode the
-# chart's `registry` value switches to localhost:${REG_PORT} so ActorTemplate
-# image refs are rewritten by atelet to the in-cluster registry.
+# ate-api at startup) and create the default WorkerPool. Upstream releases
+# carry the substrate wiring since v0.10.0, so `deploy` accepts the flag for
+# those; older releases are rejected. In this mode the chart's `registry`
+# value switches to localhost:${REG_PORT} so ActorTemplate image refs are
+# rewritten by atelet to the in-cluster registry.
 #
 # Token reading (wrapper default: Anthropic provider):
 #   ANTHROPIC_API_KEY  required — from the environment or a gitignored .env at
@@ -49,7 +47,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # Override the release per-run:  make kagent-deploy KAGENT_VERSION=0.7.9
 # (older releases may not have all images below — trim CORE/EXTRA to match).
 # ============================================================================
-KAGENT_VERSION="${KAGENT_VERSION:-0.10.0-rc3}"  # chart tag + main image tag
+KAGENT_VERSION="${KAGENT_VERSION:-0.10.0}"  # chart tag + main image tag
 KAGENT_IMAGE_PREFIX="ghcr.io/kagent-dev/kagent" # upstream main images
 CHART_REPO="oci://ghcr.io/kagent-dev/kagent/helm" # charts: ${CHART_REPO}/kagent{,-crds}
 
@@ -210,11 +208,16 @@ provision_llm_configs() {
 
 cmd_deploy() {
   require kubectl helm "$CONTAINER_RUNTIME" curl
-  # Substrate needs the podcert wiring that only exists in the local chart +
-  # locally built controller (see header). Official releases can't talk to
-  # the substrate v${SUBSTRATE_VERSION} platform.
-  [[ "$SUBSTRATE_ENABLED" = "true" ]] \
-    && die "SUBSTRATE_ENABLED=true requires locally built images — run: make kagent-build-deploy SUBSTRATE_ENABLED=true"
+  # Substrate mode with an upstream release needs the controller pod-identity
+  # wiring, which landed upstream in v0.10.0 (the E2E CI installs substrate
+  # against the same chart). Older releases can't talk to the substrate
+  # v${SUBSTRATE_VERSION} platform.
+  if [[ "$SUBSTRATE_ENABLED" = "true" ]]; then
+    case "$KAGENT_VERSION" in
+      0.10.*|0.1[1-9].*|[1-9].*) ;; # substrate wiring present
+      *) die "SUBSTRATE_ENABLED=true with an upstream release needs kagent >= 0.10.0 (got ${KAGENT_VERSION}) — bump KAGENT_VERSION or run: make kagent-build-deploy SUBSTRATE_ENABLED=true" ;;
+    esac
+  fi
   cluster_exists || die "Cluster '${KIND_CLUSTER_NAME}' does not exist — run 'make create' first."
   kctl -n "$GW_NS" get gateway "$GW_NAME" >/dev/null 2>&1 \
     || die "Gateway '${GW_NAME}' not found — run 'make create' first."

@@ -24,7 +24,7 @@ KIND_CONFIG         ?= kind/kind-config.yaml
 GWAPI_VERSION       ?= 1.6.0
 AGW_VERSION         ?= 0.0.0-latest-dev
 KAGENT_VERSION      ?=
-SUBSTRATE_ENABLED   ?= false
+SUBSTRATE_ENABLED   ?= true
 SUBSTRATE_VERSION   ?= 0.0.25
 CONTAINER_RUNTIME   ?= $(shell command -v podman >/dev/null 2>&1 && echo podman || echo docker)
 
@@ -145,10 +145,11 @@ kagent-mcp-test: ## Test MCP endpoint availability and functionality (https://ka
 # delegate to the base targets above. See scripts/85-substrate.sh for the
 # platform install details.
 
-substrate-create: ## Full stack with Agent Substrate: cluster (with substrate feature gates) + platform + kagent (local build) wired to it
+substrate-create: ## Full stack with Agent Substrate: cluster (with substrate feature gates) + platform + kagent (local build) + sample agent
 	@$(MAKE) --no-print-directory create KIND_CONFIG=kind/kind-config-substrate.yaml
 	@bash scripts/85-substrate.sh install
 	@$(MAKE) --no-print-directory kagent-build-deploy SUBSTRATE_ENABLED=true
+	@bash scripts/87-kagent-samples.sh install
 
 substrate-status: ## Show substrate platform + kagent health (pods, workerpools, actors)
 	@$(MAKE) --no-print-directory status
@@ -157,3 +158,9 @@ substrate-status: ## Show substrate platform + kagent health (pods, workerpools,
 substrate-delete: ## Remove kagent + the substrate platform (cluster and registry stay)
 	@$(MAKE) --no-print-directory kagent-delete
 	@bash scripts/85-substrate.sh uninstall
+
+substrate-samples: ## Deploy the hello-substrate sample agent (harness + template + running instance)
+	@bash scripts/87-kagent-samples.sh install
+
+substrate-validate: ## Invoke the sample agent end-to-end and check its substrate actor answers
+	@bash scripts/87-kagent-samples.sh validate

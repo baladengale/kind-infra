@@ -34,7 +34,7 @@ KAGENT_NS=${KAGENT_NS:-kagent}
 
 # kagent Agent Substrate (see scripts/85-substrate.sh + kagent/values-substrate.yaml).
 # Substrate v0.0.20 pairs with kagent >= 0.10.0-rc3 (chart tags on ghcr).
-SUBSTRATE_ENABLED=${SUBSTRATE_ENABLED:-false}
+SUBSTRATE_ENABLED=${SUBSTRATE_ENABLED:-true}
 SUBSTRATE_VERSION=${SUBSTRATE_VERSION:-0.0.25}
 SUBSTRATE_NS=${SUBSTRATE_NS:-ate-system}
 # WorkerPool ateom image, referenced as localhost:PORT so substrate's atelet
@@ -46,6 +46,10 @@ SUBSTRATE_ATEOM_IMAGE="localhost:${REG_PORT}/kagent-dev/substrate/ateom-gvisor:v
 SUBSTRATE_REG_REWRITE="kind-registry.default.svc:${REG_INTERNAL_PORT}"
 
 KUBE_CONTEXT="kind-${KIND_CLUSTER_NAME}"
+
+# envsubst is a gettext binary; Homebrew keeps it off the default PATH.
+ENVSUBST=${ENVSUBST:-$(command -v envsubst || echo /opt/homebrew/opt/gettext/bin/envsubst)}
+export ENVSUBST
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 say()  { printf '\033[1;34m==> %s\033[0m\n' "$*"; }

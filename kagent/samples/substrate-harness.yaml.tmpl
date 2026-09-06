@@ -1,0 +1,34 @@
+# Sample Harness for Agent Substrate — the "kagent" runtime adapter.
+#
+# Applied by scripts/87-kagent-samples.sh (make substrate-samples). The
+# ${KAGENT_SAMPLES_RUNTIME_IMAGE} placeholder is substituted with the
+# DIGEST-pinned golang-adk image from the local registry — the CRD rejects
+# tag-only refs (`@sha256:...` required), and the digest is how substrate
+# guarantees an ActorTemplate always rebuilds the exact same actor.
+#
+# This mirrors go/core/test/e2e/manifests/lifecycle.yaml.tmpl in the kagent
+# repo (the source of truth for the shape), minus the e2e-specific fixtures.
+apiVersion: kagent.dev/v1alpha3
+kind: Harness
+metadata:
+  name: kagent
+  namespace: kagent
+spec:
+  kagent: {}
+  workload:
+    image: ${KAGENT_SAMPLES_RUNTIME_IMAGE}
+  substrate:
+    # Platform capacity from kagent/values-substrate.yaml — the WorkerPool
+    # the sample agent's actor is scheduled onto.
+    workerPoolRef:
+      name: kagent-default
+    # Snapshot storage — substrate's bundled rustfs (S3-compatible) backs
+    # this bucket on a kind-infra cluster; same value the kagent e2e suite
+    # uses.
+    snapshotPolicy:
+      location: gs://ate-snapshots/kagent/
+  # AgentTemplates carrying the matching label are compiled by this harness.
+  allowedAgentTemplates:
+    selector:
+      matchLabels:
+        kagent.dev/sample: kagent

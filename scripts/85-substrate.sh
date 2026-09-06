@@ -287,7 +287,8 @@ cmd_status() {
   kctl get workerpools -A 2>/dev/null \
     || echo "   (no WorkerPools — kagent is not wired to substrate yet: make kagent-deploy SUBSTRATE_ENABLED=true)"
   echo "== actors =="
-  kctl get actors -A 2>/dev/null || echo "   (no actors — none have run yet)"
+  echo "   (actors live in the ate-api inventory, not k8s: kagent UI -> View -> Substrate;"
+  echo "    agent instances: make substrate-status — their STATE shows suspend/resume)"
 }
 
 cmd_uninstall() {

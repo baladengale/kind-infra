@@ -30,7 +30,7 @@ set -a; . "$ROOT_DIR/.env"; set +a
   || die "ANTHROPIC_API_KEY not set in $ROOT_DIR/.env — fill it in (see README)."
 
 total=6
-[[ "$SUBSTRATE_ENABLED" = "true" ]] && total=7
+[[ "$SUBSTRATE_ENABLED" = "true" ]] && total=8
 step=0
 next() { step=$((step + 1)); say "Step $step/$total: $*"; }
 
@@ -56,6 +56,10 @@ else
 fi
 next "AgentGateway LLM router re-apply + acceptance check..."
 bash "$ROOT_DIR/scripts/35-agentgateway-llm.sh"
+if [[ "$SUBSTRATE_ENABLED" = "true" ]]; then
+  next "sample agent on substrate (harness + template + instance)..."
+  bash "$ROOT_DIR/scripts/87-kagent-samples.sh" install
+fi
 next "personal site (build, load, manifests, route)..."
 bash "$ROOT_DIR/scripts/90-site.sh"
 
@@ -66,7 +70,8 @@ ok "kagent CLI/TUI API http://kagent-api.${DOMAIN}  (kagent_url in ~/.kagent/con
 ok "personal site      https://baladengale.${DOMAIN}"
 ok "registry           https://kind-registry.${DOMAIN}  (docker push kind-registry.${DOMAIN}/img:tag)"
 if [[ "$SUBSTRATE_ENABLED" = "true" ]]; then
-  ok "substrate          ${SUBSTRATE_NS} (kubectl get workerpools,actors -A)"
+  ok "substrate          ${SUBSTRATE_NS} (kubectl get workerpools -A)"
+  ok "sample agent       hello-substrate on substrate (make substrate-validate to test)"
 fi
 
 # Hostnames need the dnsmasq zone; until then curl --resolve 127.0.0.1 works.

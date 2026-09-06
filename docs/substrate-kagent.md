@@ -8,8 +8,8 @@ actually hit (each with the fix that worked).
 Short version:
 
 ```bash
-make substrate-create   # cluster (substrate feature gates) + platform + kagent wired to it
-make substrate-status   # ate-system pods, WorkerPools, actors
+make substrate-create   # cluster (substrate feature gates) + platform + kagent + sample agent
+make substrate-status   # ate-system pods, WorkerPools, sample agent state
 make substrate-delete   # remove kagent + substrate (cluster and registry stay)
 ```
 
@@ -111,6 +111,30 @@ order matters: platform first (`85-substrate.sh install`), kagent second.
 `substrate-create` sequences this; `substrate_sets` in `80-kagent.sh`
 re-checks and refuses to deploy kagent without a healthy platform.
 
+## The sample agent (`hello-substrate`)
+
+`make substrate-create` (or `make substrate-samples` on an existing stack)
+deploys a reference agent you can validate the platform against — shape
+copied from the kagent repo's e2e fixtures
+(`go/core/test/e2e/manifests/lifecycle.yaml.tmpl`):
+
+- `Harness/kagent` — the Go ADK runtime adapter, pinned to the digest of the
+  golang-adk image that the deployed controller was built with (resolved
+  from the local registry; the CRD rejects tag-only refs)
+- `AgentTemplate/hello-substrate` — a declarative agent whose system prompt
+  describes its own runtime, labeled to match the harness admission selector
+- one `AgentInstance` created through the kagent CLI
+
+```bash
+make substrate-validate   # invoke it: the answer must describe the gVisor actor
+kagent get agent-instance # STATE flips READY/RUNNING as the actor resumes
+```
+
+The same playbook adopts any AgentTemplate: give it the harness's
+`matchLabels` (here `kagent.dev/sample: kagent`), then
+`kagent create agent-instance --harness kagent --agent-template <name>`.
+The UI's View → Substrate page shows the underlying actors.
+
 ## Troubleshooting — things that actually broke
 
 **Substrate pods crash-loop reading `trust-bundle.pem` /
@@ -154,12 +178,33 @@ the retired v1alpha2 agents anyway).
 install.** Just the postgres startup race — the controller retries and
 converges; `kubectl delete pod` on the controller skips the backoff wait.
 
+**Invoke fails with `Connect: deadline has elapsed` after ~10s.** The CLI's
+default connection deadline is 10s, but the first invoke pays a COLD actor
+restore (gVisor snapshot rehydration, ~20-40s), and the actor suspends again
+after every task boundary — so every invoke can be a cold wake. Pass
+`--timeout 120s` (the sample script's validate does). Warm invocations take
+1-2s.
+
+**`kubectl get actors` fails (`the server doesn't have a resource type`).**
+Actors are ate-api inventory objects, not Kubernetes resources — kubectl can
+only see `workerpools.ate.dev`. Actor state: kagent UI → View → Substrate,
+or the AgentInstance STATE via `kagent get agent-instance`.
+
+**`kubectl-ate get actors` fails `token issuer ... not trusted`.** The
+`ate-api-authentication` ConfigMap trusts issuer
+`https://kubernetes.default.svc`, but kind's service-account tokens are
+issued as `https://kubernetes.default.svc.cluster.local`. Only affects
+ad-hoc `kubectl-ate get/logs` calls (the controller authenticates with pod
+certificates, and CI only uses `kubectl-ate admin`, which talks to the k8s
+API). To fix, add the `.cluster.local` issuer as a second jwtProviders entry
+and restart ate-api.
+
 ## Day-2 notes
 
 - Agents on substrate show up as `AgentInstance` (PostgreSQL/gRPC control
-  plane), not Kubernetes objects. `kubectl get workerpool,actors -A` shows
+  plane), not Kubernetes objects. `kubectl get workerpool -A` shows
   the platform side; the UI (https://kagent.internal → View → Substrate)
-  shows actor state.
+  shows actor state, and `kagent get agent-instance` shows instance lifecycle.
 - Between requests an actor is `Suspended` (snapshot stored, worker slot
   released); the next A2A request auto-resumes it. First golden snapshot
   after creating an agent takes about a minute.

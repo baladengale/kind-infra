@@ -33,10 +33,16 @@ rehydrate, instead of per-pod Deployments): add `SUBSTRATE_ENABLED=true` to
 any target, or use the shortcuts:
 
 ```bash
-make substrate-create   # cluster + substrate platform (ate-system) + kagent wired to it
-make substrate-status   # ate-system pods, WorkerPools, actors
+make substrate-create   # cluster + substrate platform (ate-system) + kagent + sample agent
+make substrate-status   # ate-system pods, WorkerPools, sample agent state
+make substrate-validate # invoke the sample agent end-to-end and check the answer
 make substrate-delete   # remove kagent + substrate (cluster and registry stay)
 ```
+
+`SUBSTRATE_ENABLED` defaults to `true`; pass `SUBSTRATE_ENABLED=false` to any
+target for the plain-Deployment kagent flow. Substrate mode also deploys the
+**hello-substrate sample agent** (Harness + AgentTemplate + a running
+AgentInstance) — validate with `make substrate-validate`.
 
 Substrate mode uses a separate cluster config (`kind/kind-config-substrate.yaml`)
 that enables the pod-identity feature gates substrate requires — the default
@@ -126,6 +132,8 @@ spec:
 | `make substrate-create` | `create` + kagent with Agent Substrate enabled (see below) |
 | `make substrate-status` | Substrate platform + kagent health (pods, workerpools, actors) |
 | `make substrate-delete` | Remove kagent + the substrate platform (cluster and registry stay) |
+| `make substrate-samples` | Deploy the hello-substrate sample agent (harness + template + instance) |
+| `make substrate-validate` | Invoke the sample agent and verify it answers from its gVisor actor |
 
 Any of the above accepts `SUBSTRATE_ENABLED=true` — e.g.
 `make create SUBSTRATE_ENABLED=true` also installs the substrate platform,
