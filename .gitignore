@@ -12,3 +12,4 @@ tmp/
 
 # downloaded CLI tools (kubectl-ate — see scripts/85-substrate.sh)
 tools/
+backups/
