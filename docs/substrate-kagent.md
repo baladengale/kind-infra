@@ -127,7 +127,7 @@ copied from the kagent repo's e2e fixtures
 
 ```bash
 make substrate-validate   # invoke it: the answer must describe the gVisor actor
-kagent get agent-instance # STATE flips READY/RUNNING as the actor resumes
+kagent get agent-instance # STATE stays READY — see "Where is my pod?" below
 ```
 
 The same playbook adopts any AgentTemplate: give it the harness's
@@ -184,6 +184,23 @@ restore (gVisor snapshot rehydration, ~20-40s), and the actor suspends again
 after every task boundary — so every invoke can be a cold wake. Pass
 `--timeout 120s` (the sample script's validate does). Warm invocations take
 1-2s.
+
+**"Where is my pod?" — no new pod appears when you chat.** That is the
+design: agents are NOT per-agent Deployments anymore. The AgentInstance's
+actor runs INSIDE a `kagent-default` worker pod's gVisor sandbox, and
+between requests it is checkpointed to the snapshot store and its worker
+slot released. What a chat actually does (watch with
+`kubectl logs -n kagent kagent-default-<TAB> -f` during an invoke):
+
+1. `RestoreWorkload` — the actor snapshot is rehydrated into a worker's
+   gVisor sandbox ("Readyz reached 200" when the agent app is up)
+2. the A2A request is served through the atenet router
+3. `CheckpointWorkload` — a fresh snapshot is written and the sandbox is
+   torn down (often ~1s after the restore on a short task)
+
+The AgentInstance STATE deliberately stays `READY` through all of this
+(quiescence leaves the instance logically ready). Actor-level visibility:
+the kagent UI → View → Substrate, and the worker pod logs above.
 
 **`kubectl get actors` fails (`the server doesn't have a resource type`).**
 Actors are ate-api inventory objects, not Kubernetes resources — kubectl can
