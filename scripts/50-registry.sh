@@ -3,6 +3,11 @@
 # Port-free registry access: kind-registry.internal (443, TLS) through the
 # Gateway — no :5001 needed from the machine.
 #
+# Modes:
+#   (none)  install everything (Service/Endpoints, route, containerd wiring)
+#   sync    refresh only the Endpoints IP — run after the registry container
+#           was recreated (docker restart) so gateway pushes stop failing
+#
 # Pieces:
 #   1. Service + manual Endpoints pointing at the kind-registry container's
 #      IP on the kind network, so the Gateway can proxy it like any backend
@@ -29,17 +34,24 @@ CERT_DIR="$ROOT_DIR/certs"
 # ---------------------------------------------------------------------------
 # 1. Registry container IP on the kind network -> Service + Endpoints
 # ---------------------------------------------------------------------------
-reg_ip="$("$CONTAINER_RUNTIME" inspect -f '{{.NetworkSettings.Networks.kind.IPAddress}}' "$REG_NAME" 2>/dev/null || true)"
-[[ -n "$reg_ip" ]] || die "Could not read the kind-network IP of container '${REG_NAME}' — is it running?"
-
-say "Exposing registry ${reg_ip}:5000 as Service default/kind-registry (manifests/registry-service.yaml)..."
-apply_manifest registry-service.yaml
-
 # The Endpoints point at the registry container's IP on the kind network,
-# which changes whenever the container is recreated — so they are written
-# here instead of living in a static manifest.
-say "Pointing Endpoints default/kind-registry at ${reg_ip}:5000..."
-kctl apply -f - >/dev/null <<EOF
+# which changes whenever the container is recreated (a Docker Desktop
+# restart does it) — the Gateway then refuses every push/pull through
+# kind-registry.${DOMAIN}:443. `bash scripts/50-registry.sh sync` refreshes
+# just this; deploys that push to ${REG_HOST} run it automatically.
+sync_registry_endpoint() {
+  reg_ip="$("$CONTAINER_RUNTIME" inspect -f '{{.NetworkSettings.Networks.kind.IPAddress}}' "$REG_NAME" 2>/dev/null || true)"
+  [[ -n "$reg_ip" ]] || die "Could not read the kind-network IP of container '${REG_NAME}' — is it running?"
+
+  have_ip="$(kctl -n default get endpoints kind-registry \
+    -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || true)"
+  [[ "$have_ip" = "$reg_ip" ]] && return 0
+
+  say "Exposing registry ${reg_ip}:5000 as Service default/kind-registry (manifests/registry-service.yaml)..."
+  apply_manifest registry-service.yaml
+
+  say "Pointing Endpoints default/kind-registry at ${reg_ip}:5000..."
+  kctl apply -f - >/dev/null <<EOF
 apiVersion: v1
 kind: Endpoints
 metadata:
@@ -54,6 +66,14 @@ subsets:
   - name: registry
     port: 5000
 EOF
+}
+
+sync_registry_endpoint
+
+if [[ "${1:-}" = "sync" ]]; then
+  ok "registry endpoint in sync"
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Route kind-registry.${DOMAIN} (443/80) through the Gateway

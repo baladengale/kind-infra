@@ -8,6 +8,7 @@
 #   make delete    remove the cluster and the registry (DNS stays)
 #   make test      chainsaw e2e tests against the running cluster
 #   make status    show what is running and whether DNS works
+#   make kagent-update  sync fork <- upstream (kagent-dev), pull ../kagent + rebuild + redeploy
 #
 # kagent Agent Substrate (dedicated targets below):
 #   make substrate-create   cluster + substrate platform + kagent(local build) wired to it
@@ -39,9 +40,9 @@ PORT ?=
 
 .DEFAULT_GOAL := help
 .PHONY: help all create update upgrade delete delete-cluster dns-install dns-remove \
-        expose unexpose sync test kagent-deploy kagent-build-deploy kagent-delete \
+        expose unexpose sync test kagent-deploy kagent-pull kagent-update kagent-build-deploy kagent-delete \
         agentgateway-llm-setup site-deploy status kubectl-tools kagent-mcp-test \
-        substrate-create substrate-status substrate-delete
+        substrate-create substrate-status substrate-mirror substrate-delete
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -107,6 +108,13 @@ test: ## Run chainsaw e2e tests against the running cluster
 kagent-deploy: ## Deploy upstream kagent: mirror images to local registry + helm install (MCP included)
 	@bash scripts/80-kagent.sh deploy
 
+kagent-pull: ## Sync the GitHub fork with upstream kagent-dev (Sync fork), then pull ../kagent
+	@bash scripts/80-kagent.sh pull
+
+kagent-update: ## Latest upstream kagent: sync fork + pull ../kagent, rebuild + redeploy (local build)
+	@bash scripts/80-kagent.sh pull
+	@$(MAKE) --no-print-directory kagent-build-deploy
+
 kagent-build-deploy: ## Build ../kagent, push to local registry, deploy the local chart (MCP included)
 	@bash scripts/80-kagent.sh build-deploy
 
@@ -154,6 +162,9 @@ substrate-create: ## Full stack with Agent Substrate: cluster (with substrate fe
 substrate-status: ## Show substrate platform + kagent health (pods, workerpools, actors)
 	@$(MAKE) --no-print-directory status
 	@bash scripts/85-substrate.sh status true
+
+substrate-mirror: ## Mirror the substrate ateom image into the local registry (run after bumping SUBSTRATE_VERSION)
+	@bash scripts/85-substrate.sh mirror
 
 substrate-delete: ## Remove kagent + the substrate platform (cluster and registry stay)
 	@$(MAKE) --no-print-directory kagent-delete

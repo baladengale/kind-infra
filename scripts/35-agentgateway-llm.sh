@@ -40,6 +40,19 @@ kctl -n "$GW_NS" get gateway "$GW_NAME" >/dev/null 2>&1 \
 kctl -n "$KAGENT_NS" get crd modelconfigs.kagent.dev >/dev/null 2>&1 \
   || die "kagent CRDs not found — deploy kagent first (make kagent-deploy or scripts/80-kagent.sh deploy)."
 
+# ModelConfig apiVersion — upstream churns it (v1alpha2 was dropped in the v2
+# rewrite), so read the storage version off the installed CRD and normalize
+# every manifest to it instead of hardcoding.
+MC_API_VERSION="$(kctl get crd modelconfigs.kagent.dev \
+  -o jsonpath='{.spec.versions[?(@.storage==true)].name}')"
+[[ -n "$MC_API_VERSION" ]] \
+  || die "could not read the storage version of modelconfigs.kagent.dev"
+
+apply_modelconfigs() { # <manifest> — apply with the CRD's storage apiVersion
+  sed "s|apiVersion: kagent.dev/v1alpha[0-9]*|apiVersion: kagent.dev/${MC_API_VERSION}|" \
+    "$ROOT_DIR/manifests/$1" | kctl apply -f - >/dev/null
+}
+
 # ---------------------------------------------------------------------------
 # 3. Create secrets for AgentGateway backends
 # ---------------------------------------------------------------------------
@@ -115,11 +128,11 @@ done
 say "Applying additional kagent ModelConfigs..."
 if [[ -n "$ARK_TOKEN" ]]; then
   # Apply all model configs (including ark)
-  apply_manifest kagent-model-configs.yaml
+  apply_modelconfigs kagent-model-configs.yaml
 else
   # Apply only the agw model config (skip ark)
   kctl apply -f - >/dev/null <<EOF
-apiVersion: kagent.dev/v1alpha2
+apiVersion: kagent.dev/${MC_API_VERSION}
 kind: ModelConfig
 metadata:
   name: agw-model-config

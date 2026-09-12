@@ -15,7 +15,7 @@
 ---
 # Ark direct ModelConfig — cheapest Ark model via the Anthropic-compatible
 # coding endpoint. For the pro model through the gateway use agw-model-config.
-apiVersion: kagent.dev/v1alpha2
+apiVersion: kagent.dev/v1alpha3
 kind: ModelConfig
 metadata:
   name: ark-model-config
@@ -32,7 +32,7 @@ spec:
 # the agw-llm-pro backend (Ark ark-code-latest primary, DeepSeek fallback on
 # 429/5xx). The API key here is a placeholder for the controller's client;
 # AgentGateway injects the real per-backend key.
-apiVersion: kagent.dev/v1alpha2
+apiVersion: kagent.dev/v1alpha3
 kind: ModelConfig
 metadata:
   name: agw-model-config
@@ -48,7 +48,7 @@ spec:
 # AgentGateway CHEAP-tier ModelConfig — routes to the agw-llm-cheap backend
 # (Ark Seed 2.0 Mini primary, DeepSeek fallback). Use this for summarization
 # and other high-volume/low-complexity workloads.
-apiVersion: kagent.dev/v1alpha2
+apiVersion: kagent.dev/v1alpha3
 kind: ModelConfig
 metadata:
   name: agw-cheap-model-config

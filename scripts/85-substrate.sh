@@ -29,6 +29,10 @@
 # Modes:
 #   install    mirror the ateom image into the local registry, then install
 #              and bootstrap substrate-crds + substrate (ate-system)
+#   mirror     ONLY mirror the ateom image into the local registry (idempotent;
+#              run after bumping SUBSTRATE_VERSION — build-deploy alone does
+#              not refresh the mirror, and the WorkerPool pod then sits in
+#              ImagePullBackOff)
 #   status     show platform pods, WorkerPools, actors and release state
 #   uninstall  helm-uninstall substrate + substrate-crds (cluster stays)
 #
@@ -272,6 +276,16 @@ cmd_install() {
   echo "   Wire kagent to it with: make kagent-deploy SUBSTRATE_ENABLED=true"
 }
 
+cmd_mirror() {
+  require curl "$CONTAINER_RUNTIME"
+  cluster_exists || die "Cluster '${KIND_CLUSTER_NAME}' does not exist — run 'make create' first."
+  # The mirror pushes via https://kind-registry.internal — the Gateway proxies
+  # that to an Endpoints IP that goes stale when the registry container is
+  # recreated (docker restart). Refresh it first.
+  bash "$ROOT_DIR/scripts/50-registry.sh" sync
+  mirror_ateom
+}
+
 cmd_status() {
   require kubectl
   if ! platform_installed; then
@@ -307,6 +321,7 @@ usage() { sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1; }
 
 case "${1:-}" in
   install)    cmd_install ;;
+  mirror)     cmd_mirror ;;
   status)     cmd_status "${2:-}" ;;
   uninstall)  cmd_uninstall ;;
   *)          usage ;;

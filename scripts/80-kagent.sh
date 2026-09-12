@@ -15,6 +15,17 @@
 #   build-deploy  build the ../kagent checkout and push into the local
 #                 registry via localhost:${REG_PORT} (buildkit treats
 #                 localhost as insecure), then install the LOCAL chart.
+#                 Refresh guards: mirrors the substrate ateom image when
+#                 SUBSTRATE_VERSION changed, and resets the bundled database
+#                 when the fork's migration SQL changed (KAGENT_KEEP_DB=true
+#                 keeps the data) — squashed migrations never re-apply on
+#                 their own.
+#   pull          bring upstream (kagent-dev/kagent) into the fork first,
+#                 then into the checkout: the merge-upstream API (the GitHub
+#                 "Sync fork" button) merges upstream/main into the fork's
+#                 branch server-side — the fork's local-only commits rule out
+#                 a plain fast-forward — and git pull brings the synced
+#                 branch down. Local commits are kept (merge, not rebase).
 #   delete        uninstall both releases and remove the hostname route.
 #
 # Agent Substrate (SUBSTRATE_ENABLED=true, set via `make ... SUBSTRATE_ENABLED=true`):
@@ -206,6 +217,68 @@ provision_llm_configs() {
     || warn "agentgateway-llm setup failed — agents stay InProgress until it succeeds (re-run: make agentgateway-llm-setup)"
 }
 
+# Mirror the substrate ateom worker image into the local registry. Mirroring
+# lives in scripts/85-substrate.sh (install does it), but a deploy alone bumps
+# the WorkerPool image (SUBSTRATE_VERSION in common.sh) without touching the
+# platform — mirror here so the new pod does not sit in ImagePullBackOff.
+ensure_ateom_mirror() {
+  [[ "$SUBSTRATE_ENABLED" = "true" ]] || return 0
+  bash "$ROOT_DIR/scripts/85-substrate.sh" mirror
+}
+
+# Upstream keeps editing the single squashed 000001_initial.sql, and
+# schema_migrations marks version 1 applied forever — a controller built from
+# a newer checkout never re-runs it and crashes on the missing columns/tables
+# (SQLSTATE 42703/42P01) while agents stay InProgress. Guard: hash the fork's
+# migration SQL into a ConfigMap; when the hash changed since the last
+# build-deploy (or the DB predates this guard), reset the bundled database
+# BEFORE the new controller starts so migrations re-run on a clean slate.
+# Dev data (conversation history) is lost — KAGENT_KEEP_DB=true skips the
+# reset. Upstream-chart `deploy` cannot hash the SQL (it is embedded in the
+# image), so the guard runs on build-deploy only.
+migrations_hash() {
+  cat "$KAGENT_DIR"/go/core/pkg/migrations/{core,vector}/*.sql 2>/dev/null \
+    | shasum -a 256 | cut -d' ' -f1
+}
+
+db_has_schema() { # 't' when the kagent database was migrated before
+  kctl -n "$KAGENT_NS" exec deploy/kagent-postgresql -- \
+    psql -U kagent -d kagent -Atc \
+    "SELECT to_regclass('public.schema_migrations') IS NOT NULL;" 2>/dev/null || true
+}
+
+reset_db_if_migrations_drifted() {
+  local sql_hash cm_hash
+  sql_hash="$(migrations_hash)"
+  [[ -n "$sql_hash" ]] \
+    || { warn "no migration SQL under ${KAGENT_DIR} — skipping the DB drift guard"; return 0; }
+  cm_hash="$(kctl -n "$KAGENT_NS" get cm kagent-migrations-hash -o jsonpath='{.data.sha256}' 2>/dev/null || true)"
+  [[ "$cm_hash" = "$sql_hash" ]] && return 0
+  [[ "${KAGENT_KEEP_DB:-}" = "true" ]] \
+    && { warn "KAGENT_KEEP_DB=true — not resetting the kagent database (migration SQL changed)"; return 0; }
+  kctl -n "$KAGENT_NS" get deploy kagent-postgresql >/dev/null 2>&1 || return 0 # fresh cluster
+  if [[ -z "$cm_hash" ]] && [[ "$(db_has_schema)" != "t" ]]; then
+    return 0 # never-migrated database — the new controller migrates it cleanly
+  fi
+
+  say "kagent migration SQL changed since the last build — resetting the bundled database..."
+  warn "Dropping database 'kagent' (conversation history is lost — KAGENT_KEEP_DB=true keeps it)."
+  kctl -n "$KAGENT_NS" exec deploy/kagent-postgresql -- \
+    psql -U kagent -d postgres -v ON_ERROR_STOP=1 \
+    -c 'DROP DATABASE kagent WITH (FORCE);' \
+    -c 'CREATE DATABASE kagent OWNER kagent;' >/dev/null
+  ok "database reset — the new controller re-runs migrations on start"
+}
+
+record_migrations_hash() { # after a successful install, so only real drift resets next time
+  local sql_hash
+  sql_hash="$(migrations_hash)"
+  [[ -n "$sql_hash" ]] || return 0
+  kctl -n "$KAGENT_NS" create cm kagent-migrations-hash \
+    --from-literal=sha256="$sql_hash" \
+    --dry-run=client -o yaml | kctl apply -f - >/dev/null
+}
+
 cmd_deploy() {
   require kubectl helm "$CONTAINER_RUNTIME" curl
   # Substrate mode with an upstream release needs the controller pod-identity
@@ -223,7 +296,9 @@ cmd_deploy() {
     || die "Gateway '${GW_NAME}' not found — run 'make create' first."
   read_token
 
+  bash "$ROOT_DIR/scripts/50-registry.sh" sync # registry IP may be stale after a docker restart — pushes go through it
   mirror_images
+  ensure_ateom_mirror
   # bash 3.2 (macOS) has no mapfile — read provider sets line by line.
   local -a sets=() substrate=()
   while IFS= read -r s; do sets+=("$s"); done < <(provider_sets)
@@ -312,6 +387,9 @@ cmd_build_deploy() {
     --namespace "$KAGENT_NS" --create-namespace \
     --kube-context "$KUBE_CONTEXT" --wait --timeout 5m >/dev/null
 
+  ensure_ateom_mirror
+  reset_db_if_migrations_drifted
+
   provision_llm_configs
 
   say "Installing kagent ${version} (local chart, images from ${REG_HOST})..."
@@ -329,8 +407,65 @@ cmd_build_deploy() {
     ${substrate[@]+"${substrate[@]}"} \
     -f "$ROOT_DIR/kagent/values.yaml" --wait --timeout 10m >/dev/null
 
+  record_migrations_hash
   expose_ui
   probe_ui
+}
+
+# Two-stage sync: upstream (kagent-dev/kagent) -> the GitHub fork -> the
+# local checkout. Stage 1 calls the merge-upstream API (what the GitHub
+# "Sync fork" -> "Update branch" button does): it merges upstream/main into
+# the fork's branch server-side, which is the ONLY mechanism that works for
+# this fork — `gh repo sync` is fast-forward-only, and the fork's branch
+# carries local-only commits, so it can never fast-forward. Stage 2 pulls
+# the synced branch down. Local commits are kept — merge, never rebase —
+# and the tree must be clean.
+cmd_pull() {
+  require git gh
+  [[ -d "$KAGENT_DIR/.git" ]] \
+    || die "kagent checkout not found at ${KAGENT_DIR} — set KAGENT_DIR=..."
+  [[ -z "$(git -C "$KAGENT_DIR" status --porcelain)" ]] \
+    || die "${KAGENT_DIR} has uncommitted changes — commit or stash them first."
+  git -C "$KAGENT_DIR" remote get-url upstream >/dev/null 2>&1 \
+    || die "no 'upstream' remote in ${KAGENT_DIR} — add it: git -C ${KAGENT_DIR} remote add upstream https://github.com/kagent-dev/kagent.git"
+
+  local branch
+  branch="$(git -C "$KAGENT_DIR" branch --show-current)"
+  [[ -n "$branch" ]] \
+    || die "${KAGENT_DIR} is on a detached HEAD — check out a branch first."
+
+  say "Fetching origin and upstream (kagent-dev/kagent) in ${KAGENT_DIR}..."
+  git -C "$KAGENT_DIR" fetch origin --prune
+  git -C "$KAGENT_DIR" fetch upstream --tags --prune
+  git -C "$KAGENT_DIR" rev-parse --verify -q "refs/remotes/origin/${branch}" >/dev/null \
+    || die "the 'origin' remote has no '${branch}' branch"
+  git -C "$KAGENT_DIR" rev-parse --verify -q "refs/remotes/upstream/${branch}" >/dev/null \
+    || die "upstream has no '${branch}' branch — this sync flow expects main: git -C ${KAGENT_DIR} checkout main"
+
+  local fork_behind local_behind
+  fork_behind="$(git -C "$KAGENT_DIR" rev-list --count "refs/remotes/origin/${branch}..refs/remotes/upstream/${branch}")"
+  local_behind="$(git -C "$KAGENT_DIR" rev-list --count "HEAD..refs/remotes/origin/${branch}")"
+  if [[ "$fork_behind" = "0" && "$local_behind" = "0" ]]; then
+    ok "kagent checkout already up to date ($(git -C "$KAGENT_DIR" log --oneline -1))"
+    return 0
+  fi
+
+  if [[ "$fork_behind" != "0" ]]; then
+    say "Syncing the GitHub fork with upstream (${fork_behind} new commits)..."
+    # gh's no-argument repo resolution prefers the 'upstream' remote, which
+    # would target kagent-dev/kagent — parse the fork slug from origin's URL.
+    local slug
+    slug="$(git -C "$KAGENT_DIR" remote get-url origin \
+      | sed -E 's#.*github\.com[:/]##; s#\.git$##')"
+    gh api -X POST "repos/${slug}/merge-upstream" -f branch="$branch" >/dev/null \
+      || die "fork sync failed (merge conflict upstream?) — use \"Sync fork\" on GitHub for '${branch}', then re-run: make kagent-update"
+    ok "fork ${slug} synced with upstream ${branch}"
+  fi
+
+  say "Pulling the synced fork into the local checkout..."
+  git -C "$KAGENT_DIR" pull --no-rebase --no-edit origin "$branch" \
+    || die "pull has conflicts — resolve them in ${KAGENT_DIR}, commit, then re-run: make kagent-update"
+  ok "kagent checkout updated: $(git -C "$KAGENT_DIR" log --oneline -1)"
 }
 
 cmd_delete() {
@@ -352,6 +487,7 @@ usage() { sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1; }
 case "${1:-}" in
   deploy)        cmd_deploy ;;
   build-deploy)  cmd_build_deploy ;;
+  pull)          cmd_pull ;;
   delete)        cmd_delete ;;
   *)             usage ;;
 esac
