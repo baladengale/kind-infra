@@ -62,12 +62,15 @@ if [[ "$SUBSTRATE_ENABLED" = "true" ]]; then
 fi
 next "personal site (build, load, manifests, route)..."
 bash "$ROOT_DIR/scripts/90-site.sh"
+next "OIE Hub route (Mac-hosted Hub via host bridge)..."
+bash "$ROOT_DIR/scripts/95-hub.sh"
 
 echo ""
 say "All up:"
 ok "kagent UI + MCP    https://kagent.${DOMAIN}"
 ok "kagent CLI/TUI API http://kagent-api.${DOMAIN}  (kagent_url in ~/.kagent/config.yaml)"
 ok "personal site      https://baladengale.${DOMAIN}"
+ok "OIE Hub            http://hub.${DOMAIN}  (Mac LaunchAgent via host bridge)"
 ok "registry           https://kind-registry.${DOMAIN}  (docker push kind-registry.${DOMAIN}/img:tag)"
 if [[ "$SUBSTRATE_ENABLED" = "true" ]]; then
   ok "substrate          ${SUBSTRATE_NS} (kubectl get workerpools -A)"

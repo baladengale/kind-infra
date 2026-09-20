@@ -1,0 +1,30 @@
+# OIE Hub bridge — exposes the Mac-hosted Hub (LaunchAgent com.oie.hub,
+# 127.0.0.1:8765) at https://hub.internal through the AgentGateway.
+#
+# Selector-less Service + annotated for the kind-infra.dev/host registration
+# mechanism (scripts/60-register.sh sync creates the HTTPRoute from these
+# annotations; `make sync` re-converges and prunes).
+#
+# The EndpointSlice is NOT in this file: its IP (the Mac, as seen from inside
+# Docker Desktop) is discovered and written by scripts/95-hub.sh — same split
+# as manifests/registry-service.yaml + 50-registry.sh sync_registry_endpoint.
+#
+# Applied by: scripts/95-hub.sh (part of `make all` / `make update`).
+# Requires:   the Hub running on the host (com.oie.hub LaunchAgent).
+apiVersion: v1
+kind: Service
+metadata:
+  name: oie-hub-bridge
+  namespace: agentgateway-system
+  labels:
+    app.kubernetes.io/name: oie-hub-bridge
+    app.kubernetes.io/part-of: oie-hub
+    app.kubernetes.io/managed-by: kind-infra
+  annotations:
+    kind-infra.dev/host: "hub"
+    kind-infra.dev/port: "8765"
+spec:
+  ports:
+    - name: http
+      port: 8765
+      targetPort: 8765

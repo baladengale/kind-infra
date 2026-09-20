@@ -64,6 +64,7 @@ update: ## Re-apply addons on the existing cluster (picks up version bumps)
 		@bash scripts/30-gateway.sh
 		@bash scripts/50-registry.sh
 		@bash scripts/35-agentgateway-llm.sh
+		@bash scripts/95-hub.sh
 		@echo "Update complete."
 
 upgrade: ## Recreate the cluster with the current KIND_IMAGE_VERSION (destructive)
