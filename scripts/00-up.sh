@@ -48,7 +48,7 @@ next "kagent (mirror/build images, helm install, UI + MCP route)..."
 # Substrate needs the locally built controller (see scripts/80-kagent.sh).
 # The deploy also provisions the agentgateway LLM configs + agw ModelConfigs
 # right after kagent-crds, BEFORE the controller/agents start — agents
-# reference agw-cheap-model-config as summarizer and won't compile without it.
+# reference default-model-config and won't compile without it.
 if [[ "$SUBSTRATE_ENABLED" = "true" ]]; then
   bash "$ROOT_DIR/scripts/80-kagent.sh" build-deploy
 else

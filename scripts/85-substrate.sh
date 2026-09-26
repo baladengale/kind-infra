@@ -262,6 +262,7 @@ cmd_install() {
     --kube-context "$KUBE_CONTEXT" --timeout 5m \
     --set atelet.gcpAuthForImagePulls=false \
     --set-json "atelet.extraArgs=[\"--localhost-registry-replacement=${SUBSTRATE_REG_REWRITE}\"]" \
+    --set-json 'credentialProvider.namespacePolicies=[{"atespace":"kagent","allowedNamespaces":["kagent"]}]' \
     >/dev/null
 
   bootstrap_pools

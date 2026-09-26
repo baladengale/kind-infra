@@ -61,6 +61,7 @@ metadata:
     app.kubernetes.io/managed-by: kind-infra
   annotations:
     kind-infra.dev/host: "${host}"
+    kind-infra.dev/registered: "true"
 spec:
   parentRefs:
   - name: ${GW_NAME}
@@ -89,12 +90,16 @@ desired_services() {
     | @tsv'
 }
 
-# Enumerate managed HTTPRoutes: namespace<TAB>name<TAB>hostname
+# Enumerate managed HTTPRoutes: namespace<TAB>name<TAB>hostname<TAB>registered
+# "registered" = created by apply_route (carries the kind-infra.dev/registered
+# annotation); "static" = applied from a repo manifest. sync prunes only the
+# former — static manifests would otherwise be silently deleted on every sync.
 managed_routes() {
-  kctl get httproute -A -l "$LABEL_MANAGED" -o json | jq -r '
+  kctl get httproute -A -l "$LABEL_MANAGED" -o json | jq -r --arg ar "kind-infra.dev/registered" '
     .items[]
     | [ .metadata.namespace, .metadata.name,
-        (.spec.hostnames[0] // "") ]
+        (.spec.hostnames[0] // ""),
+        (if .metadata.annotations[$ar] then "registered" else "static" end) ]
     | @tsv'
 }
 
@@ -114,7 +119,7 @@ cmd_remove() { # <host>
   local host="${1:-}"
   [[ -n "$host" ]] || usage
   local deleted=0 ns name h
-  while IFS=$'\t' read -r ns name h; do
+  while IFS=$'\t' read -r ns name h _; do
     [[ "$h" == "${host}.${DOMAIN}" ]] || continue
     kctl -n "$ns" delete httproute "$name" --ignore-not-found >/dev/null
     ok "Removed ${h} (httproute ${ns}/${name})"
@@ -133,8 +138,9 @@ cmd_sync() {
     ok "https://${host}.${DOMAIN} -> ${ns}/${svc}:${port}"
   done < <(desired_services)
 
-  # Prune managed routes whose Service no longer carries the annotation.
-  while IFS=$'\t' read -r ns name h; do
+  # Prune registered routes whose Service no longer carries the annotation.
+  while IFS=$'\t' read -r ns name h reg; do
+    [[ "$reg" == "registered" ]] || continue
     [[ -n "$h" ]] || continue
     if ! grep -qx "$h" "$desired_hosts"; then
       kctl -n "$ns" delete httproute "$name" --ignore-not-found >/dev/null

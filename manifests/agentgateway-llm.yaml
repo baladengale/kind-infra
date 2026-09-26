@@ -1,13 +1,13 @@
 # AgentGateway LLM router — tiered routing with primary/fallback failover.
 #
-# Architecture (two tiers, each with Ark primary -> DeepSeek fallback):
+# Architecture (two tiers, each with Z.AI primary -> DeepSeek fallback):
 #
 #   kagent-controller -> AgentGateway proxy -> agw-llm-routing HTTPRoute
-#     -> model seed-2-0-mini-* (cheap tier) -> agw-llm-cheap
-#          group 1 (primary):  Ark  seed-2-0-mini-260428
+#     -> model glm-5.3-flash (cheap tier)   -> agw-llm-cheap
+#          group 1 (primary):  Z.AI glm-5.3-flash   (coding plan)
 #          group 2 (fallback): DeepSeek deepseek-chat
 #     -> anything else (pro tier)           -> agw-llm-pro
-#          group 1 (primary):  Ark  ark-code-latest
+#          group 1 (primary):  Z.AI glm-5.3         (coding plan, flagship)
 #          group 2 (fallback): DeepSeek deepseek-chat
 #
 # Failover: within each backend, priority group 1 is used until it is evicted
@@ -17,16 +17,16 @@
 # transparent: the failed attempt is retried against the fallback within the
 # same request.
 #
-# Pricing (approx, per M tokens):
-#   ark-code-latest      pro tier  (coding plan, auto routing)
-#   seed-2-0-mini-260428 cheap tier ~$0.10 in / $0.40 out
+# Pricing (coding-plan credits, per M tokens, approx cash equivalent):
+#   glm-5.3-flash        cheap tier (fast, high-volume)
+#   glm-5.3              pro tier   (flagship, agentic work)
 #   deepseek-chat        fallback   ~$0.28 in / $0.42 out
 #
 # Applied by scripts/35-agentgateway-llm.sh (make agentgateway-llm-setup).
 #
 # Prerequisites:
 #   - AgentGateway installed (scripts/30-gateway.sh)
-#   - Secrets agw-ark-secret + agw-deepseek-secret (created by the setup script)
+#   - Secrets agw-zai-secret + agw-deepseek-secret (created by the setup script)
 ---
 # PreRouting policy: extract the model name from the JSON request body into the
 # x-model header so the HTTPRoute can match on it. This must target the Gateway
@@ -49,7 +49,7 @@ spec:
           - name: "x-model"
             value: 'json(request.body).model'
 ---
-# PRO tier backend — Ark primary, DeepSeek fallback
+# PRO tier backend — Z.AI glm-5.3 primary, DeepSeek fallback
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayBackend
 metadata:
@@ -58,17 +58,17 @@ metadata:
 spec:
   ai:
     groups:
-      # Priority group 1 (primary): Ark coding plan
+      # Priority group 1 (primary): Z.AI coding plan flagship
       - providers:
-          - name: ark-pro
+          - name: zai-pro
             custom:
-              model: ark-code-latest
+              model: glm-5.3
               formats:
                 - type: Messages
                 - type: Completions
-            host: ark.ap-southeast.bytepluses.com
+            host: api.z.ai
             port: 443
-            path: /api/coding/v1/messages
+            path: /api/anthropic/v1/messages
             policies:
               auth:
                 credentials:
@@ -76,13 +76,13 @@ spec:
                       header:
                         name: x-api-key
                     secretRef:
-                      name: agw-ark-secret
+                      name: agw-zai-secret
                       key: Authorization
               tls:
                 alpnProtocols:
                   - h2
                   - http/1.1
-      # Priority group 2 (fallback): DeepSeek — used only when Ark is evicted
+      # Priority group 2 (fallback): DeepSeek — used only when Z.AI is evicted
       - providers:
           - name: deepseek-fallback
             custom:
@@ -107,7 +107,7 @@ spec:
                   - h2
                   - http/1.1
 ---
-# CHEAP tier backend — cheapest Ark model primary, DeepSeek fallback
+# CHEAP tier backend — Z.AI glm-5.3-flash primary, DeepSeek fallback
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayBackend
 metadata:
@@ -116,17 +116,17 @@ metadata:
 spec:
   ai:
     groups:
-      # Priority group 1 (primary): Ark cheapest (Seed 2.0 Mini)
+      # Priority group 1 (primary): Z.AI fast tier
       - providers:
-          - name: ark-cheap
+          - name: zai-cheap
             custom:
-              model: seed-2-0-mini-260428
+              model: glm-5.3-flash
               formats:
                 - type: Messages
                 - type: Completions
-            host: ark.ap-southeast.bytepluses.com
+            host: api.z.ai
             port: 443
-            path: /api/coding/v1/messages
+            path: /api/anthropic/v1/messages
             policies:
               auth:
                 credentials:
@@ -134,7 +134,7 @@ spec:
                       header:
                         name: x-api-key
                     secretRef:
-                      name: agw-ark-secret
+                      name: agw-zai-secret
                       key: Authorization
               tls:
                 alpnProtocols:
@@ -233,8 +233,9 @@ spec:
   parentRefs:
     - name: kind-infra
   rules:
-    # CHEAP tier: Seed 2.0 Mini requests -> cheap backend
-    # (agentgateway/Envoy regex is full-match, so the .* tail is required)
+    # CHEAP tier: glm-5.3-flash requests -> cheap backend
+    # (agentgateway/Envoy regex is full-match; anchors so glm-5.3-flash only —
+    # any other glm model falls through to the PRO catch-all)
     - matches:
         - path:
             type: PathPrefix
@@ -242,14 +243,14 @@ spec:
           headers:
             - type: RegularExpression
               name: x-model
-              value: "^seed-2-0-mini.*"
+              value: "^glm-5\\.3-flash$"
         - path:
             type: PathPrefix
             value: /chat/completions
           headers:
             - type: RegularExpression
               name: x-model
-              value: "^seed-2-0-mini.*"
+              value: "^glm-5\\.3-flash$"
       backendRefs:
         - name: agw-llm-cheap
           group: agentgateway.dev

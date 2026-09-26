@@ -49,11 +49,11 @@ k8s-agent:
     compactionInterval: 5
     overlapSize: 2
     summarizer:
-      modelConfig: agw-cheap-model-config
+      modelConfig: default-model-config
 
 kgateway-agent:
   compaction:
     compactionInterval: 5
     overlapSize: 2
     summarizer:
-      modelConfig: agw-cheap-model-config
+      modelConfig: default-model-config
