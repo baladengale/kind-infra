@@ -96,7 +96,9 @@ spec:
         - containerPort: 8443
           hostPort: 8443"
 
-kctl -n "$GW_NS" rollout status deploy "$dep_name" --timeout=180s
+# 180s is not enough on a cold registry: the proxy image pulls from
+# cr.agentgateway.dev on the very first bring-up.
+kctl -n "$GW_NS" rollout status deploy "$dep_name" --timeout=480s
 # Gateway API conditions are Accepted/Programmed (there is no Available).
 kctl -n "$GW_NS" wait --for=condition=Programmed gateway "$GW_NAME" --timeout=180s
 
