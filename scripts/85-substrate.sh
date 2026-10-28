@@ -377,6 +377,15 @@ EOF
   kctl -n "$SUBSTRATE_NS" rollout status deploy/substrate-postgres \
     --timeout=180s >/dev/null
 
+  # The entrypoint's init SQL only runs on a fresh data dir; a pod restart
+  # mid-initdb skips it. Reconcile idempotently against the live DB.
+  kctl -n "$SUBSTRATE_NS" exec -i deploy/substrate-postgres -- \
+    psql -U substrate_owner -d substrate -v ON_ERROR_STOP=1 -v rw_pw="$rw_pw" <<'SQL' >/dev/null
+SELECT format('CREATE ROLE %I LOGIN SUPERUSER PASSWORD %L', 'substrate_readwrite', :'rw_pw')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'substrate_readwrite') \gexec
+ALTER ROLE substrate_readwrite WITH PASSWORD :'rw_pw';
+SQL
+
   kctl -n "$SUBSTRATE_NS" create secret generic substrate-postgres-readwrite \
     --from-literal=readWriteConnectionString="postgresql://substrate_readwrite:${rw_pw}@${pg_host}:5432/substrate?sslmode=disable" \
     --dry-run=client -o yaml | kctl apply -f - >/dev/null

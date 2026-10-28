@@ -421,6 +421,32 @@ EOF
   kctl -n "$KAGENT_NS" rollout status deploy/kagent-postgresql \
     --timeout=180s >/dev/null
 
+  # The entrypoint's init SQL only runs on a fresh data dir — if the pod
+  # restarts mid-initdb, the restart skips the file and roles end up
+  # half-created. Reconcile the full state idempotently against the live DB
+  # (\gexec turns each SELECTed row into a guarded CREATE; the rest is
+  # naturally idempotent).
+  kctl -n "$KAGENT_NS" exec -i deploy/kagent-postgresql -- \
+    psql -U kagent_owner_user -d kagent -v ON_ERROR_STOP=1 \
+      -v owner_pw="$owner_pw" -v rw_pw="$rw_pw" <<'SQL' >/dev/null
+SELECT format('CREATE ROLE %I NOLOGIN', 'kagent_owner')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'kagent_owner') \gexec
+SELECT format('CREATE ROLE %I NOLOGIN', 'kagent_readwrite')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'kagent_readwrite') \gexec
+SELECT format('CREATE ROLE %I LOGIN SUPERUSER PASSWORD %L', 'kagent_owner_user', :'owner_pw')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'kagent_owner_user') \gexec
+SELECT format('CREATE ROLE %I LOGIN SUPERUSER PASSWORD %L', 'kagent_readwrite_user', :'rw_pw')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'kagent_readwrite_user') \gexec
+ALTER ROLE kagent_owner_user WITH PASSWORD :'owner_pw';
+ALTER ROLE kagent_readwrite_user WITH PASSWORD :'rw_pw';
+ALTER DATABASE kagent OWNER TO kagent_owner;
+GRANT kagent_owner TO kagent_owner_user;
+GRANT kagent_readwrite TO kagent_readwrite_user;
+GRANT kagent_owner TO kagent_readwrite;
+GRANT ALL ON DATABASE kagent TO kagent_readwrite;
+GRANT ALL ON SCHEMA public TO kagent_owner, kagent_readwrite;
+SQL
+
   kctl -n "$KAGENT_NS" create secret generic kagent-postgres-owner \
     --from-literal=ownerConnectionString="postgresql://kagent_owner_user:${owner_pw}@${pg_host}:5432/kagent?sslmode=disable" \
     --dry-run=client -o yaml | kctl apply -f - >/dev/null
