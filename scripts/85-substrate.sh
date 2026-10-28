@@ -195,6 +195,12 @@ bootstrap_pools() {
     || { say "Creating pool secret egress-mitm-ca-pool..."; ate="${ate:-$(kubectl_ate)}"; \
          "$ate" --context "$KUBE_CONTEXT" admin make-ca-pool --ca-id=1 \
            --name=egress-mitm-ca-pool --secret-namespace="$SUBSTRATE_NS" >/dev/null; missing=1; }
+  # The podcert controller's postgres signer mounts this pool (used for the
+  # postgres TLS client certificates substrate projects to DB clients).
+  kctl -n "$PODCERT_NS" get secret postgres-ca-pool >/dev/null 2>&1 \
+    || { say "Creating pool secret postgres-ca-pool..."; ate="${ate:-$(kubectl_ate)}"; \
+         "$ate" --context "$KUBE_CONTEXT" admin make-ca-pool --ca-id=1 \
+           --name=postgres-ca-pool --secret-namespace="$PODCERT_NS" >/dev/null; missing=1; }
   if [[ "$missing" = 0 ]]; then
     ok "cached    substrate CA/JWT pools already bootstrapped"
   else
@@ -397,6 +403,18 @@ cmd_install() {
 
   ensure_podcert_apis
 
+  # The podcertificate controller (certificate signers for servicedns /
+  # podidentity / postgres) is its own chart — ate-setup installs it, so a
+  # chart-only install must do it explicitly. Its signer deployments mount
+  # the CA pool secrets, so it cannot go Ready until bootstrap_pools below
+  # creates them; install WITHOUT --wait and roll it after.
+  say "Installing substrate-podcert ${SUBSTRATE_VERSION} (certificate signers)..."
+  helm upgrade --install substrate-podcert "${SUBSTRATE_CHART_REPO}/substrate-podcert" \
+    --version "$SUBSTRATE_VERSION" --namespace "$PODCERT_NS" --create-namespace \
+    --kube-context "$KUBE_CONTEXT" --timeout 5m >/dev/null
+
+  bootstrap_pools
+
   say "Installing substrate-crds ${SUBSTRATE_VERSION} (upstream OCI chart)..."
   helm upgrade --install substrate-crds "${SUBSTRATE_CHART_REPO}/substrate-crds" \
     --version "$SUBSTRATE_VERSION" --namespace "$SUBSTRATE_NS" --create-namespace \
@@ -425,9 +443,12 @@ cmd_install() {
     --set 'ateApi.authorization.bootstrapOwners[0]=spiffe://cluster.local/ns/kagent/sa/kagent-controller' \
     >/dev/null
 
-  bootstrap_pools
   bootstrap_actor_id
   bootstrap_postgres
+
+  # Pools exist now — the podcert signers can mount them and go Ready.
+  kctl -n "$PODCERT_NS" rollout status deploy/podcertificate-controller \
+    --timeout=180s >/dev/null
 
   say "Waiting for the substrate platform to converge..."
   helm upgrade substrate "${SUBSTRATE_CHART_REPO}/substrate" \
@@ -474,8 +495,9 @@ cmd_uninstall() {
     return 0
   fi
   say "Uninstalling substrate releases..."
-  helm uninstall substrate      --namespace "$SUBSTRATE_NS" --kube-context "$KUBE_CONTEXT" >/dev/null 2>&1 || true
-  helm uninstall substrate-crds --namespace "$SUBSTRATE_NS" --kube-context "$KUBE_CONTEXT" >/dev/null 2>&1 || true
+  helm uninstall substrate       --namespace "$SUBSTRATE_NS" --kube-context "$KUBE_CONTEXT" >/dev/null 2>&1 || true
+  helm uninstall substrate-crds  --namespace "$SUBSTRATE_NS" --kube-context "$KUBE_CONTEXT" >/dev/null 2>&1 || true
+  helm uninstall substrate-podcert --namespace "$PODCERT_NS" --kube-context "$KUBE_CONTEXT" >/dev/null 2>&1 || true
   # The installer-provided postgres (bootstrap_postgres) is outside helm.
   say "Removing installer-provided substrate postgres..."
   kctl -n "$SUBSTRATE_NS" delete deploy substrate-postgres \

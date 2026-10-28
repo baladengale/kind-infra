@@ -279,6 +279,157 @@ record_migrations_hash() { # after a successful install, so only real drift rese
     --dry-run=client -o yaml | kctl apply -f - >/dev/null
 }
 
+# The chart no longer bundles postgres: it reads the controller's database
+# login from pre-created secrets kagent-postgres-{owner,readwrite} (same
+# external-DB pattern as substrate). Deploy a small dedicated postgres and
+# write those secrets. SUPERUSER roles are deliberate — dev kind cluster.
+bootstrap_kagent_db() {
+  if kctl -n "$KAGENT_NS" get secret kagent-postgres-readwrite >/dev/null 2>&1 \
+     && kctl -n "$KAGENT_NS" get deploy kagent-postgresql >/dev/null 2>&1; then
+    ok "cached    kagent postgres + connection secrets already present"
+    return 0
+  fi
+  say "Bootstrapping kagent postgres (dedicated, ${KAGENT_NS})..."
+  local pg_image="postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15"
+  local owner_pw rw_pw pg_host="kagent-postgresql.${KAGENT_NS}.svc.cluster.local"
+  owner_pw="$(openssl rand -hex 16)"
+  rw_pw="$(openssl rand -hex 16)"
+
+  kctl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kagent-postgres-auth
+  namespace: $KAGENT_NS
+type: Opaque
+stringData:
+  ownerPassword: "$owner_pw"
+  readWritePassword: "$rw_pw"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kagent-postgresql
+  namespace: $KAGENT_NS
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kagent-postgresql
+  namespace: $KAGENT_NS
+  labels: &kpgLabels
+    app.kubernetes.io/name: kagent-postgresql
+    app.kubernetes.io/component: database
+    app.kubernetes.io/managed-by: kind-infra
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: *kpgLabels
+  template:
+    metadata:
+      labels: *kpgLabels
+    spec:
+      containers:
+      - name: postgresql
+        image: "$pg_image"
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: POSTGRES_DB
+          value: kagent
+        - name: POSTGRES_USER
+          value: kagent_owner_user
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: kagent-postgres-auth
+              key: ownerPassword
+        ports:
+        - name: postgresql
+          containerPort: 5432
+        readinessProbe:
+          exec:
+            command: [sh, -c, 'pg_isready -U kagent_owner_user -d kagent']
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: "1"
+            memory: 512Mi
+        volumeMounts:
+        - name: data
+          # postgres 18+ images keep data in /var/lib/postgresql/<major>/
+          mountPath: /var/lib/postgresql
+        - name: init
+          mountPath: /docker-entrypoint-initdb.d
+          readOnly: true
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: kagent-postgresql
+      - name: init
+        secret:
+          secretName: kagent-postgres-init
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kagent-postgres-init
+  namespace: $KAGENT_NS
+type: Opaque
+stringData:
+  # initdb runs once on the empty volume. The controller SET ROLEs to the
+  # kagent_owner / kagent_readwrite group roles (chart's database.*.role);
+  # the owner group must own the database or migrations can't create schemas.
+  01-roles.sql: |
+    CREATE ROLE kagent_owner NOLOGIN;
+    CREATE ROLE kagent_readwrite NOLOGIN;
+    CREATE ROLE kagent_owner_user LOGIN SUPERUSER PASSWORD '$owner_pw';
+    CREATE ROLE kagent_readwrite_user LOGIN SUPERUSER PASSWORD '$rw_pw';
+    GRANT kagent_owner TO kagent_owner_user;
+    GRANT kagent_readwrite TO kagent_readwrite_user;
+    ALTER DATABASE kagent OWNER TO kagent_owner;
+    GRANT ALL ON DATABASE kagent TO kagent_readwrite;
+    GRANT ALL ON SCHEMA public TO kagent_owner, kagent_readwrite;
+    -- The schema itself is created by the owner-role migrations; membership
+    -- lets the readwrite role use (and see) it once it exists.
+    GRANT kagent_owner TO kagent_readwrite;
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kagent-postgresql
+  namespace: $KAGENT_NS
+spec:
+  selector:
+    app.kubernetes.io/name: kagent-postgresql
+  ports:
+  - name: postgresql
+    port: 5432
+    targetPort: postgresql
+EOF
+
+  kctl -n "$KAGENT_NS" rollout status deploy/kagent-postgresql \
+    --timeout=180s >/dev/null
+
+  kctl -n "$KAGENT_NS" create secret generic kagent-postgres-owner \
+    --from-literal=ownerConnectionString="postgresql://kagent_owner_user:${owner_pw}@${pg_host}:5432/kagent?sslmode=disable" \
+    --dry-run=client -o yaml | kctl apply -f - >/dev/null
+  kctl -n "$KAGENT_NS" create secret generic kagent-postgres-readwrite \
+    --from-literal=readWriteConnectionString="postgresql://kagent_readwrite_user:${rw_pw}@${pg_host}:5432/kagent?sslmode=disable" \
+    --dry-run=client -o yaml | kctl apply -f - >/dev/null
+  ok "bootstrap  kagent postgres + connection secrets"
+}
+
 cmd_deploy() {
   require kubectl helm "$CONTAINER_RUNTIME" curl
   # Substrate mode with an upstream release needs the controller pod-identity
@@ -299,6 +450,7 @@ cmd_deploy() {
   bash "$ROOT_DIR/scripts/50-registry.sh" sync # registry IP may be stale after a docker restart — pushes go through it
   mirror_images
   ensure_worker_mirror
+  bootstrap_kagent_db
   # bash 3.2 (macOS) has no mapfile — read provider sets line by line.
   local -a sets=() substrate=()
   while IFS= read -r s; do sets+=("$s"); done < <(provider_sets)
@@ -320,6 +472,10 @@ cmd_deploy() {
   chart_dir="$tmp/kagent"
   patch_chart "$chart_dir"
 
+  # The substrate platform's NetworkPolicies admit ate-api ingress only from
+  # namespaces labeled ate.dev/api-access=true — without it the controller's
+  # gRPC dial to api.ate-system.svc times out (kindnet enforces on kind).
+  kctl label ns "$KAGENT_NS" ate.dev/api-access=true --overwrite >/dev/null
   say "Installing kagent ${KAGENT_VERSION} (upstream OCI chart, images from ${REG_HOST})..."
   # --server-side=false: the agent manifests render fields the CRD schema
   # doesn't declare (e.g. a2aConfig.resources) — server-side apply rejects
@@ -396,10 +552,15 @@ cmd_build_deploy() {
     --kube-context "$KUBE_CONTEXT" --wait --timeout 5m >/dev/null
 
   ensure_worker_mirror
+  bootstrap_kagent_db
   reset_db_if_migrations_drifted
 
   provision_llm_configs
 
+  # The substrate platform's NetworkPolicies admit ate-api ingress only from
+  # namespaces labeled ate.dev/api-access=true — without it the controller's
+  # gRPC dial to api.ate-system.svc times out (kindnet enforces on kind).
+  kctl label ns "$KAGENT_NS" ate.dev/api-access=true --overwrite >/dev/null
   say "Installing kagent ${version} (local chart, images from ${REG_HOST})..."
   helm upgrade --install kagent "$chart_dir" \
     --namespace "$KAGENT_NS" --create-namespace \
