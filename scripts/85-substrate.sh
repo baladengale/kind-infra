@@ -43,8 +43,8 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 SUBSTRATE_CHART_REPO="oci://ghcr.io/kagent-dev/substrate/helm" # ${SUBSTRATE_CHART_REPO}/substrate{,-crds}
-SUBSTRATE_ATEOM_SRC="ghcr.io/kagent-dev/substrate/ateom-gvisor:v${SUBSTRATE_VERSION}"
-SUBSTRATE_ATEOM_LOCAL="${REG_HOST}/kagent-dev/substrate/ateom-gvisor:v${SUBSTRATE_VERSION}"
+SUBSTRATE_WORKER_SRC="ghcr.io/kagent-dev/substrate/ateworker-gvisor:v${SUBSTRATE_VERSION}"
+SUBSTRATE_WORKER_LOCAL="${REG_HOST}/kagent-dev/substrate/ateworker-gvisor:v${SUBSTRATE_VERSION}"
 PODCERT_NS="podcertificate-controller-system"
 
 # Substrate's pod-identity layer (podCertificate / ClusterTrustBundle
@@ -132,23 +132,23 @@ manifest_cached() { # <repo> <tag> — image already in the local registry?
 # Mirror the ateom gVisor worker image so atelet pulls it from the local
 # registry instead of ghcr (same caching pattern as scripts/80-kagent.sh).
 mirror_ateom() {
-  local repo="kagent-dev/substrate/ateom-gvisor" tag="v${SUBSTRATE_VERSION}"
+  local repo="kagent-dev/substrate/ateworker-gvisor" tag="v${SUBSTRATE_VERSION}"
   if manifest_cached "$repo" "$tag"; then
     ok "cached    ${REG_HOST}/${repo}:${tag}"
     return 0
   fi
-  say "mirroring ${SUBSTRATE_ATEOM_SRC}"
+  say "mirroring ${SUBSTRATE_WORKER_SRC}"
   local i
   for i in 1 2 3; do
-    "$CONTAINER_RUNTIME" pull "$SUBSTRATE_ATEOM_SRC" >/dev/null && break
-    warn "pull of ${SUBSTRATE_ATEOM_SRC} failed (attempt $i/3), retrying in 10s..."
+    "$CONTAINER_RUNTIME" pull "$SUBSTRATE_WORKER_SRC" >/dev/null && break
+    warn "pull of ${SUBSTRATE_WORKER_SRC} failed (attempt $i/3), retrying in 10s..."
     sleep 10
   done
-  "$CONTAINER_RUNTIME" image inspect "$SUBSTRATE_ATEOM_SRC" >/dev/null 2>&1 \
-    || die "could not pull ${SUBSTRATE_ATEOM_SRC}"
-  "$CONTAINER_RUNTIME" tag  "$SUBSTRATE_ATEOM_SRC" "$SUBSTRATE_ATEOM_LOCAL"
-  "$CONTAINER_RUNTIME" push "$SUBSTRATE_ATEOM_LOCAL" >/dev/null
-  ok "mirrored  ${SUBSTRATE_ATEOM_LOCAL}"
+  "$CONTAINER_RUNTIME" image inspect "$SUBSTRATE_WORKER_SRC" >/dev/null 2>&1 \
+    || die "could not pull ${SUBSTRATE_WORKER_SRC}"
+  "$CONTAINER_RUNTIME" tag  "$SUBSTRATE_WORKER_SRC" "$SUBSTRATE_WORKER_LOCAL"
+  "$CONTAINER_RUNTIME" push "$SUBSTRATE_WORKER_LOCAL" >/dev/null
+  ok "mirrored  ${SUBSTRATE_WORKER_LOCAL}"
 }
 
 # Fetch kubectl-ate (the substrate admin CLI) for this machine's os/arch.
@@ -168,27 +168,38 @@ kubectl_ate() {
   printf '%s\n' "$bin"
 }
 
-# One-time CA/JWT pool bootstrap (skipped when the pools already exist —
-# regenerating them would invalidate every issued pod certificate).
+# One-time CA/JWT pool bootstrap (each pool is created only when missing —
+# regenerating one would invalidate every certificate it issued, and a
+# half-finished run must be able to resume).
 bootstrap_pools() {
-  if kctl -n "$PODCERT_NS" get secret service-dns-ca-pool >/dev/null 2>&1 \
-     && kctl -n "$PODCERT_NS" get secret pod-identity-ca-pool >/dev/null 2>&1 \
-     && kctl -n "$SUBSTRATE_NS" get secret actor-id-ca-pool >/dev/null 2>&1; then
+  local ate missing=0
+  kctl -n "$PODCERT_NS" get secret service-dns-ca-pool >/dev/null 2>&1 \
+    || { say "Creating pool secret service-dns-ca-pool..."; ate="$(kubectl_ate)"; \
+         "$ate" --context "$KUBE_CONTEXT" admin make-ca-pool --ca-id=1 \
+           --name=service-dns-ca-pool --secret-namespace="$PODCERT_NS" >/dev/null; missing=1; }
+  kctl -n "$PODCERT_NS" get secret pod-identity-ca-pool >/dev/null 2>&1 \
+    || { say "Creating pool secret pod-identity-ca-pool..."; ate="${ate:-$(kubectl_ate)}"; \
+         "$ate" --context "$KUBE_CONTEXT" admin make-ca-pool --ca-id=1 \
+           --name=pod-identity-ca-pool --secret-namespace="$PODCERT_NS" >/dev/null; missing=1; }
+  kctl -n "$SUBSTRATE_NS" get secret actor-id-jwt-pool >/dev/null 2>&1 \
+    || { say "Creating pool secret actor-id-jwt-pool..."; ate="${ate:-$(kubectl_ate)}"; \
+         "$ate" --context "$KUBE_CONTEXT" admin make-jwt-pool --key-id=1 \
+           --name=actor-id-jwt-pool --secret-namespace="$SUBSTRATE_NS" >/dev/null; missing=1; }
+  kctl -n "$SUBSTRATE_NS" get secret actor-id-ca-pool >/dev/null 2>&1 \
+    || { say "Creating pool secret actor-id-ca-pool..."; ate="${ate:-$(kubectl_ate)}"; \
+         "$ate" --context "$KUBE_CONTEXT" admin make-ca-pool --ca-id=1 \
+           --name=actor-id-ca-pool --secret-namespace="$SUBSTRATE_NS" >/dev/null; missing=1; }
+  # atenet-egress mounts this MITM root to intercept actor TLS egress
+  # (required again from substrate 0.7).
+  kctl -n "$SUBSTRATE_NS" get secret egress-mitm-ca-pool >/dev/null 2>&1 \
+    || { say "Creating pool secret egress-mitm-ca-pool..."; ate="${ate:-$(kubectl_ate)}"; \
+         "$ate" --context "$KUBE_CONTEXT" admin make-ca-pool --ca-id=1 \
+           --name=egress-mitm-ca-pool --secret-namespace="$SUBSTRATE_NS" >/dev/null; missing=1; }
+  if [[ "$missing" = 0 ]]; then
     ok "cached    substrate CA/JWT pools already bootstrapped"
-    return 0
+  else
+    ok "bootstrap  substrate CA/JWT pools created"
   fi
-  say "Bootstrapping substrate CA/JWT pools (one-time)..."
-  local ate
-  ate="$(kubectl_ate)"
-  "$ate" --context "$KUBE_CONTEXT" admin make-ca-pool --ca-id=1 \
-    --name=service-dns-ca-pool --secret-namespace="$PODCERT_NS" >/dev/null
-  "$ate" --context "$KUBE_CONTEXT" admin make-ca-pool --ca-id=1 \
-    --name=pod-identity-ca-pool --secret-namespace="$PODCERT_NS" >/dev/null
-  "$ate" --context "$KUBE_CONTEXT" admin make-jwt-pool --key-id=1 \
-    --name=actor-id-jwt-pool --secret-namespace="$SUBSTRATE_NS" >/dev/null
-  "$ate" --context "$KUBE_CONTEXT" admin make-ca-pool --ca-id=1 \
-    --name=actor-id-ca-pool --secret-namespace="$SUBSTRATE_NS" >/dev/null
-  ok "bootstrap  substrate CA/JWT pools created"
 }
 
 # Derive the ate-system trust + auth objects from the actor-id CA pool
@@ -212,8 +223,10 @@ metadata:
   name: ate-api-authentication
   namespace: $SUBSTRATE_NS
 data:
+  # Schema per substrate 0.6.0 (ate-setup buildAuthenticationConfig):
+  # jwtProviders only — actorIdentityJWTProvider was removed and the
+  # api-server rejects unknown fields.
   authentication.yaml: |
-    actorIdentityJWTProvider: kubernetes
     jwtProviders:
     - name: kubernetes
       issuer: https://kubernetes.default.svc
@@ -222,6 +235,149 @@ data:
       discoveryTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
 EOF
   ok "bootstrap  actor-id CA certs + ate-api authentication config"
+}
+
+# Substrate 0.6.0 expects the INSTALLER to provide PostgreSQL: the chart only
+# references pre-created secrets substrate-postgres-{readwrite,owner} (its
+# NetworkPolicies already admit api-server -> pods labeled app: postgres).
+# Deploy a small dedicated postgres in ate-system and write those secrets.
+# Passwords are generated once and kept in Secret substrate-postgres-auth;
+# SUPERUSER grants are deliberate — this is a single-node dev kind cluster.
+bootstrap_postgres() {
+  if kctl -n "$SUBSTRATE_NS" get secret substrate-postgres-readwrite >/dev/null 2>&1 \
+     && kctl -n "$SUBSTRATE_NS" get deploy substrate-postgres >/dev/null 2>&1; then
+    ok "cached    substrate postgres + connection secrets already present"
+    return 0
+  fi
+  say "Bootstrapping substrate postgres (dedicated, ${SUBSTRATE_NS})..."
+  local pg_image="postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15"
+  local owner_pw rw_pw pg_host="substrate-postgres.${SUBSTRATE_NS}.svc.cluster.local"
+  owner_pw="$(openssl rand -hex 16)"
+  rw_pw="$(openssl rand -hex 16)"
+
+  kctl apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: substrate-postgres-auth
+  namespace: $SUBSTRATE_NS
+type: Opaque
+stringData:
+  ownerPassword: "$owner_pw"
+  readWritePassword: "$rw_pw"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: substrate-postgres-data
+  namespace: $SUBSTRATE_NS
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: substrate-postgres
+  namespace: $SUBSTRATE_NS
+  labels: &pgLabels
+    app: postgres          # matches the chart's postgres NetworkPolicy selector
+    app.kubernetes.io/name: substrate-postgres
+    app.kubernetes.io/managed-by: kind-infra
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: *pgLabels
+  template:
+    metadata:
+      labels: *pgLabels
+    spec:
+      containers:
+      - name: postgresql
+        image: "$pg_image"
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: POSTGRES_DB
+          value: substrate
+        - name: POSTGRES_USER
+          value: substrate_owner
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: substrate-postgres-auth
+              key: ownerPassword
+        ports:
+        - name: postgres
+          containerPort: 5432
+        readinessProbe:
+          exec:
+            command: [sh, -c, 'pg_isready -U substrate_owner -d substrate']
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: "1"
+            memory: 512Mi
+        volumeMounts:
+        - name: data
+          # postgres 18+ images keep data in /var/lib/postgresql/<major>/
+          # and refuse a volume mounted directly at .../data.
+          mountPath: /var/lib/postgresql
+        - name: init
+          mountPath: /docker-entrypoint-initdb.d
+          readOnly: true
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: substrate-postgres-data
+      - name: init
+        secret:
+          secretName: substrate-postgres-init
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: substrate-postgres-init
+  namespace: $SUBSTRATE_NS
+type: Opaque
+stringData:
+  # initdb runs once on the empty volume; SUPERUSER is deliberate (dev kind
+  # cluster — the api-server SET ROLEs to these login roles anyway).
+  01-readwrite-role.sql: |
+    CREATE ROLE substrate_readwrite LOGIN SUPERUSER PASSWORD '$rw_pw';
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: substrate-postgres
+  namespace: $SUBSTRATE_NS
+spec:
+  selector:
+    app: postgres
+    app.kubernetes.io/name: substrate-postgres
+  ports:
+  - name: postgres
+    port: 5432
+    targetPort: postgres
+EOF
+
+  kctl -n "$SUBSTRATE_NS" rollout status deploy/substrate-postgres \
+    --timeout=180s >/dev/null
+
+  kctl -n "$SUBSTRATE_NS" create secret generic substrate-postgres-readwrite \
+    --from-literal=readWriteConnectionString="postgresql://substrate_readwrite:${rw_pw}@${pg_host}:5432/substrate?sslmode=disable" \
+    --dry-run=client -o yaml | kctl apply -f - >/dev/null
+  kctl -n "$SUBSTRATE_NS" create secret generic substrate-postgres-owner \
+    --from-literal=ownerConnectionString="postgresql://substrate_owner:${owner_pw}@${pg_host}:5432/substrate?sslmode=disable" \
+    --dry-run=client -o yaml | kctl apply -f - >/dev/null
+  ok "bootstrap  substrate postgres + connection secrets"
 }
 
 platform_installed() { # helm release 'substrate' present in ate-system?
@@ -257,16 +413,21 @@ cmd_install() {
   # below exist, so waiting here would just burn the timeout. The bootstrap
   # runs, then a --reuse-values upgrade waits for the real convergence.
   say "Installing substrate ${SUBSTRATE_VERSION} (ate-system, kind registry settings)..."
+  # The kagent controller authenticates to ate-api with its ServiceDNS
+  # client cert (SPIFFE ID) and must own the actor templates it compiles —
+  # the same grant upstream's kagent CLI install makes.
   helm upgrade --install substrate "${SUBSTRATE_CHART_REPO}/substrate" \
     --version "$SUBSTRATE_VERSION" --namespace "$SUBSTRATE_NS" \
     --kube-context "$KUBE_CONTEXT" --timeout 5m \
     --set atelet.gcpAuthForImagePulls=false \
     --set-json "atelet.extraArgs=[\"--localhost-registry-replacement=${SUBSTRATE_REG_REWRITE}\"]" \
     --set-json 'credentialProvider.namespacePolicies=[{"atespace":"kagent","allowedNamespaces":["kagent"]}]' \
+    --set 'ateApi.authorization.bootstrapOwners[0]=spiffe://cluster.local/ns/kagent/sa/kagent-controller' \
     >/dev/null
 
   bootstrap_pools
   bootstrap_actor_id
+  bootstrap_postgres
 
   say "Waiting for the substrate platform to converge..."
   helm upgrade substrate "${SUBSTRATE_CHART_REPO}/substrate" \
@@ -315,6 +476,13 @@ cmd_uninstall() {
   say "Uninstalling substrate releases..."
   helm uninstall substrate      --namespace "$SUBSTRATE_NS" --kube-context "$KUBE_CONTEXT" >/dev/null 2>&1 || true
   helm uninstall substrate-crds --namespace "$SUBSTRATE_NS" --kube-context "$KUBE_CONTEXT" >/dev/null 2>&1 || true
+  # The installer-provided postgres (bootstrap_postgres) is outside helm.
+  say "Removing installer-provided substrate postgres..."
+  kctl -n "$SUBSTRATE_NS" delete deploy substrate-postgres \
+    pvc substrate-postgres-data \
+    secret substrate-postgres-auth substrate-postgres-init \
+    substrate-postgres-readwrite substrate-postgres-owner \
+    --ignore-not-found >/dev/null 2>&1 || true
   ok "substrate platform removed (cluster and ateom mirror stay)"
 }
 

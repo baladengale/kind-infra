@@ -26,7 +26,7 @@ GWAPI_VERSION       ?= 1.6.0
 AGW_VERSION         ?= 0.0.0-latest-dev
 KAGENT_VERSION      ?=
 SUBSTRATE_ENABLED   ?= true
-SUBSTRATE_VERSION   ?= 0.0.25
+SUBSTRATE_VERSION   ?= 0.7.0-alpha1
 CONTAINER_RUNTIME   ?= $(shell command -v podman >/dev/null 2>&1 && echo podman || echo docker)
 
 export DOMAIN KIND_CLUSTER_NAME KIND_IMAGE_VERSION KIND_CONFIG GWAPI_VERSION AGW_VERSION CONTAINER_RUNTIME
@@ -39,7 +39,7 @@ SVC  ?=
 PORT ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help all create update upgrade delete delete-cluster dns-install dns-remove \
+.PHONY: help all create update recover autostart autostart-remove upgrade delete delete-cluster dns-install dns-remove \
         expose unexpose sync test kagent-deploy kagent-pull kagent-update kagent-build-deploy kagent-delete \
         agentgateway-llm-setup site-deploy status kubectl-tools kagent-mcp-test \
         substrate-create substrate-status substrate-mirror substrate-delete
@@ -65,7 +65,17 @@ update: ## Re-apply addons on the existing cluster (picks up version bumps)
 		@bash scripts/50-registry.sh
 		@bash scripts/35-agentgateway-llm.sh
 		@bash scripts/95-hub.sh
+		@bash scripts/96-strata.sh
 		@echo "Update complete."
+
+recover: ## Heal the stack after a host/Docker restart (registry endpoints, worker registrations, routes)
+	@bash scripts/05-recover.sh
+
+autostart: ## Install the login launchd agent: Docker + full stack come up automatically (runs 'recover')
+	@bash scripts/95-autostart.sh install
+
+autostart-remove: ## Remove the login autostart agent
+	@bash scripts/95-autostart.sh uninstall
 
 upgrade: ## Recreate the cluster with the current KIND_IMAGE_VERSION (destructive)
 	@read -p "Recreate cluster '$(KIND_CLUSTER_NAME)' with kindest/node:v$(KIND_IMAGE_VERSION)? Workloads are lost. [y/N] " ans; \
@@ -137,7 +147,9 @@ status: ## Show clusters, addons, registry and DNS state
 	@echo "== gateway =="; \
 		kubectl --context $(KUBE_CONTEXT) get gateway -n agentgateway-system 2>/dev/null || true
 	@echo "== registry =="; \
-		$(CONTAINER_RUNTIME) ps --filter name=kind-registry --format '{{.Names}}  {{.Status}}' 2>/dev/null || echo "(not running)"
+		$(CONTAINER_RUNTIME) ps --filter name=kind-registry --format '{{.Names}}  {{.Status}}' 2>/dev/null || echo "(not running)"; \
+		printf 'registry route (https://kind-registry.$(DOMAIN)/v2/): '; \
+		curl -s -o /dev/null -w 'HTTP %{http_code}\n' --max-time 5 https://kind-registry.$(DOMAIN)/v2/ 2>/dev/null || echo "(no response)"
 	@echo "== dns (dig test.$(DOMAIN) @127.0.0.1) =="; \
 		dig +short test.$(DOMAIN) @127.0.0.1 2>/dev/null || echo "(dnsmasq not answering)"
 	@echo "== gateway probe (https://test.$(DOMAIN)) =="; \

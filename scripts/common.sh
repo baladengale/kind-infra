@@ -35,11 +35,13 @@ KAGENT_NS=${KAGENT_NS:-kagent}
 # kagent Agent Substrate (see scripts/85-substrate.sh + kagent/values-substrate.yaml).
 # Substrate v0.0.20 pairs with kagent >= 0.10.0-rc3 (chart tags on ghcr).
 SUBSTRATE_ENABLED=${SUBSTRATE_ENABLED:-true}
-SUBSTRATE_VERSION=${SUBSTRATE_VERSION:-0.0.25}
+# 0.7.0-alpha1 serves WorkerPool ate.dev/v1, which the kagent checkout
+# (post-upstream-sync, alpha17+42) requires — 0.6.0 only serves v1alpha1.
+SUBSTRATE_VERSION=${SUBSTRATE_VERSION:-0.7.0-alpha1}
 SUBSTRATE_NS=${SUBSTRATE_NS:-ate-system}
 # WorkerPool ateom image, referenced as localhost:PORT so substrate's atelet
 # can rewrite it (--localhost-registry-replacement) to the in-cluster registry.
-SUBSTRATE_ATEOM_IMAGE="localhost:${REG_PORT}/kagent-dev/substrate/ateom-gvisor:v${SUBSTRATE_VERSION}"
+SUBSTRATE_WORKER_IMAGE="localhost:${REG_PORT}/kagent-dev/substrate/ateworker-gvisor:v${SUBSTRATE_VERSION}"
 # Where atelet resolves localhost:PORT registry refs from inside the cluster:
 # the kind-registry Service (plain HTTP on the internal port — see
 # manifests/registry-service.yaml and scripts/50-registry.sh).

@@ -13,3 +13,6 @@ tmp/
 # downloaded CLI tools (kubectl-ate — see scripts/85-substrate.sh)
 tools/
 backups/
+
+# local test manifests that carry live API keys — never commit
+kagent/test-agent-glm.yaml

@@ -8,7 +8,7 @@
 #
 # This mirrors go/core/test/e2e/manifests/lifecycle.yaml.tmpl in the kagent
 # repo (the source of truth for the shape), minus the e2e-specific fixtures.
-apiVersion: kagent.dev/v1alpha3
+apiVersion: api.kagent.dev/v1alpha3
 kind: Harness
 metadata:
   name: kagent
@@ -27,8 +27,6 @@ spec:
     # uses.
     snapshotPolicy:
       location: gs://ate-snapshots/kagent/
-  # AgentTemplates carrying the matching label are compiled by this harness.
-  allowedAgentTemplates:
-    selector:
-      matchLabels:
-        kagent.dev/sample: kagent
+# Harness->template selection moved to instance creation (--harness flag on
+# `kagent create agent-instance`) — the old spec.allowedAgentTemplates
+# selector field no longer exists in the v1alpha3 schema.

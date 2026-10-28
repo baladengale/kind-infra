@@ -58,7 +58,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # Override the release per-run:  make kagent-deploy KAGENT_VERSION=0.7.9
 # (older releases may not have all images below — trim CORE/EXTRA to match).
 # ============================================================================
-KAGENT_VERSION="${KAGENT_VERSION:-0.10.0}"  # chart tag + main image tag
+KAGENT_VERSION="${KAGENT_VERSION:-1.0.0-alpha17}"  # chart tag + main image tag
 KAGENT_IMAGE_PREFIX="ghcr.io/kagent-dev/kagent" # upstream main images
 CHART_REPO="oci://ghcr.io/kagent-dev/kagent/helm" # charts: ${CHART_REPO}/kagent{,-crds}
 
@@ -131,7 +131,7 @@ substrate_sets() {
   # other pod image is unaffected.
   printf '%s\n' \
     --set "registry=localhost:${REG_PORT}" \
-    --set "substrateWorkerPool.workerImage=${SUBSTRATE_ATEOM_IMAGE}" \
+    --set "substrateWorkerPool.workerImage=${SUBSTRATE_WORKER_IMAGE}" \
     -f "$ROOT_DIR/kagent/values-substrate.yaml"
 }
 
@@ -221,7 +221,7 @@ provision_llm_configs() {
 # lives in scripts/85-substrate.sh (install does it), but a deploy alone bumps
 # the WorkerPool image (SUBSTRATE_VERSION in common.sh) without touching the
 # platform — mirror here so the new pod does not sit in ImagePullBackOff.
-ensure_ateom_mirror() {
+ensure_worker_mirror() {
   [[ "$SUBSTRATE_ENABLED" = "true" ]] || return 0
   bash "$ROOT_DIR/scripts/85-substrate.sh" mirror
 }
@@ -298,7 +298,7 @@ cmd_deploy() {
 
   bash "$ROOT_DIR/scripts/50-registry.sh" sync # registry IP may be stale after a docker restart — pushes go through it
   mirror_images
-  ensure_ateom_mirror
+  ensure_worker_mirror
   # bash 3.2 (macOS) has no mapfile — read provider sets line by line.
   local -a sets=() substrate=()
   while IFS= read -r s; do sets+=("$s"); done < <(provider_sets)
@@ -328,6 +328,7 @@ cmd_deploy() {
     --namespace "$KAGENT_NS" --create-namespace \
     --kube-context "$KUBE_CONTEXT" \
     --server-side=false \
+    --take-ownership \
     --set "registry=${REG_HOST}" --set "tag=${KAGENT_VERSION}" \
     --set imagePullPolicy=IfNotPresent \
     --set "kmcp.image.repository=${REG_HOST}/kagent-dev/kmcp/controller" \
@@ -356,13 +357,16 @@ cmd_build_deploy() {
   version="$(cd "$KAGENT_DIR" && git describe --tags --always | grep v)"
   say "Building kagent ${version} from ${KAGENT_DIR} into the local registry..."
   # Same target order as the kagent repo's `build` target: the agent images
-  # (golang-adk) are pushed BEFORE the controller, whose build bakes their
-  # manifest digests into the binary (substrate ActorTemplates require
-  # digest-pinned refs).
+  # (golang-adk + harnesses + sandbox-guest) are pushed BEFORE the controller,
+  # whose build bakes their manifest digests into the binary (substrate
+  # ActorTemplates require digest-pinned refs). build-kagent-adk was dropped
+  # upstream; the harness + sandbox-guest targets are its successors.
   make -C "$KAGENT_DIR" \
     DOCKER_REGISTRY="localhost:${REG_PORT}" VERSION="$version" \
     CONTAINER_RUNTIME="$CONTAINER_RUNTIME" \
-    buildx-create build-ui build-kagent-adk build-golang-adk build-controller
+    buildx-create build-ui build-golang-adk \
+    build-claude-harness build-codex-harness build-sandbox-guest \
+    build-controller
 
   # Refresh Chart.yaml from the template so the chart version matches,
   # then package (pulls the vendored dep charts into the tarball), extract
@@ -383,11 +387,15 @@ cmd_build_deploy() {
   while IFS= read -r s; do substrate+=("$s"); done < <(substrate_sets)
 
   say "Installing kagent-crds (local chart ${KAGENT_DIR}/helm/kagent-crds)..."
+  # The local chart vendors substrate-crds 0.0.25 as a helm dependency; the
+  # standalone platform (85-substrate.sh) owns the ate.dev CRDs at 0.6.0, and
+  # helm refuses to import them into this release — keep the dep disabled.
   helm upgrade --install kagent-crds "$KAGENT_DIR/helm/kagent-crds" \
+    --set substrate.enabled=false \
     --namespace "$KAGENT_NS" --create-namespace \
     --kube-context "$KUBE_CONTEXT" --wait --timeout 5m >/dev/null
 
-  ensure_ateom_mirror
+  ensure_worker_mirror
   reset_db_if_migrations_drifted
 
   provision_llm_configs
@@ -397,6 +405,7 @@ cmd_build_deploy() {
     --namespace "$KAGENT_NS" --create-namespace \
     --kube-context "$KUBE_CONTEXT" \
     --server-side=false \
+    --take-ownership \
     --set "registry=${REG_HOST}" --set "tag=${version}" \
     --set imagePullPolicy=Always \
     --set database.postgres.bundled.image.repository=pgvector \
