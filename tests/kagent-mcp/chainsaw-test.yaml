@@ -5,7 +5,10 @@ metadata:
 spec:
   description: >-
     End-to-end MCP server validation: HTTPRoute creation, gateway routing,
-    MCP endpoint availability, and tool invocation (list_agents, invoke_agent)
+    MCP endpoint availability, and the AgentInstance tool surface
+    (list_agent_instances, invoke_agent_instance). The agent under test is a
+    hermetic self-test instance created through the controller's own gRPC
+    API, so the test never touches real user instances.
   steps:
     - name: verify-kagent-running
       description: Ensure kagent controller is deployed and ready
@@ -14,6 +17,15 @@ spec:
             content: |
                 kubectl get pods -n kagent -l app.kubernetes.io/component=controller
                 kubectl wait --for=condition=Ready pod -n kagent -l app.kubernetes.io/component=controller --timeout=60s
+      cleanup:
+        - script:
+            content: |
+                kubectl delete -n kagent agenttemplate mcp-e2e-selftest --ignore-not-found
+                if [ -f /tmp/kagent-mcp-test-instance-id ]; then
+                  (cd "${REPO_ROOT}/tests/kagent-mcp/mcp-validation/instance-helper" \
+                    && go run . delete "$(cat /tmp/kagent-mcp-test-instance-id)") || true
+                  rm -f /tmp/kagent-mcp-test-instance-id
+                fi
 
     - name: verify-existing-kagent-route
       description: Verify existing kagent HTTPRoute includes MCP routing
@@ -42,18 +54,34 @@ spec:
                       type: PathPrefix
                       value: /mcp
 
-    - name: create-test-agent
-      description: Deploy test agent for MCP invocation
+    - name: create-test-agent-template
+      description: Apply the self-test AgentTemplate and wait for its golden snapshot
       try:
         - apply:
             file: mcp-validation/agent-test.yaml
-        - assert:
-            resource:
-              apiVersion: kagent.dev/v1alpha3
-              kind: SandboxAgent
-              metadata:
-                namespace: kagent
-                name: test-mcp-agent
+        - script:
+            content: |
+                # The Harness compiles the template into an ActorTemplate golden
+                # snapshot; the instance gRPC below fails before that lands.
+                for _ in $(seq 1 60); do
+                  ready="$(kubectl get agenttemplate mcp-e2e-selftest -n kagent -o json 2>/dev/null \
+                    | jq -r '[.status.harnesses[]?.conditions[]? | select(.type=="Ready") | .status] | join(",")')"
+                  [ "$ready" = "True" ] && exit 0
+                  sleep 2
+                done
+                echo "AgentTemplate mcp-e2e-selftest never became Ready (last: ${ready})"
+                exit 1
+
+    - name: create-test-instance
+      description: Create a self-test AgentInstance via the controller gRPC API
+      try:
+        - script:
+            content: |
+                cd "${REPO_ROOT}/tests/kagent-mcp/mcp-validation/instance-helper"
+                go run . create kagent mcp-e2e-selftest | tee /tmp/kagent-mcp-test-instance.json
+                id="$(jq -r .id /tmp/kagent-mcp-test-instance.json)"
+                [ -n "$id" ] && [ "$id" != "null" ]
+                echo "$id" > /tmp/kagent-mcp-test-instance-id
 
     - name: verify-mcp-endpoint-availability
       description: Test MCP endpoint responds correctly
@@ -70,88 +98,66 @@ spec:
                 echo "MCP endpoint at https://kagent.${DOMAIN}/mcp not available (last: ${code})"
                 exit 1
 
-    - name: test-list-agents-tool
-      description: Validate list_agents MCP tool availability
+    - name: test-mcp-tool-surface
+      description: Validate the AgentInstance MCP tool surface
       try:
         - script:
             content: |
-                # Test MCP tools/list_agents endpoint
+                # Stateless streamable-HTTP MCP: tools/list over POST/SSE
                 response=$(curl -s --cacert "${REPO_ROOT}/certs/rootCA.pem" \
                   -X POST "https://kagent.${DOMAIN}/mcp" \
                   -H "Content-Type: application/json" \
-                  -d '{
-                    "jsonrpc": "2.0",
-                    "method": "tools/list",
-                    "id": 1
-                  }')
+                  -H "Accept: application/json, text/event-stream" \
+                  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}')
+                printf '%s\n' "$response"
+                for tool in list_agent_instances invoke_agent_instance \
+                            list_agent_instance_checkpoints create_agent_instance_checkpoint \
+                            fork_agent_instance; do
+                  if printf '%s\n' "$response" | grep '^data:' | sed 's/^data: //' \
+                      | jq -e --arg t "$tool" '.result.tools[]? | select(.name == $t)' > /dev/null; then
+                    echo "OK $tool available"
+                  else
+                    echo "FAIL $tool not found"
+                    exit 1
+                  fi
+                done
 
-                echo "MCP Tools Response: $response"
-
-                # Validate response contains list_agents
-                if echo "$response" | jq -e '.result.tools[]? | select(.name == "list_agents")' > /dev/null; then
-                  echo "✅ list_agents tool available"
-                  exit 0
-                else
-                  echo "❌ list_agents tool not found"
-                  exit 1
-                fi
-
-    - name: test-invoke-agent-tool
-      description: Validate invoke_agent MCP tool availability
+    - name: test-list-agent-instances
+      description: list_agent_instances discovers the self-test instance
       try:
         - script:
             content: |
-                # Test invoke_agent tool exists
+                instance_id="$(cat /tmp/kagent-mcp-test-instance-id)"
                 response=$(curl -s --cacert "${REPO_ROOT}/certs/rootCA.pem" \
                   -X POST "https://kagent.${DOMAIN}/mcp" \
                   -H "Content-Type: application/json" \
-                  -d '{
-                    "jsonrpc": "2.0",
-                    "method": "tools/list",
-                    "id": 2
-                  }')
-
-                if echo "$response" | jq -e '.result.tools[]? | select(.name == "invoke_agent")' > /dev/null; then
-                  echo "✅ invoke_agent tool available"
-                  exit 0
+                  -H "Accept: application/json, text/event-stream" \
+                  -d '{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"list_agent_instances","arguments":{}}}')
+                echo "list_agent_instances response: $response"
+                if printf '%s\n' "$response" | grep '^data:' | sed 's/^data: //' \
+                    | jq -e --arg id "$instance_id" \
+                      '.result.structuredContent.agent_instances[]? | select(.id == $id and .state == "AGENT_INSTANCE_STATE_READY")' > /dev/null; then
+                  echo "OK self-test instance READY and discoverable via MCP"
                 else
-                  echo "❌ invoke_agent tool not found"
+                  echo "FAIL self-test instance $instance_id not listed"
                   exit 1
                 fi
 
-    - name: test-mcp-agent-discovery
-      description: Test list_agents returns our test agent
+    - name: test-invoke-agent-instance
+      description: invoke_agent_instance runs the self-test instance end to end
       try:
         - script:
             content: |
-                # Call list_agents tool
-                response=$(curl -s --cacert "${REPO_ROOT}/certs/rootCA.pem" \
+                instance_id="$(cat /tmp/kagent-mcp-test-instance-id)"
+                response=$(curl -s --cacert "${REPO_ROOT}/certs/rootCA.pem" --max-time 180 \
                   -X POST "https://kagent.${DOMAIN}/mcp" \
                   -H "Content-Type: application/json" \
-                  -d '{
-                    "jsonrpc": "2.0",
-                    "method": "tools/call",
-                    "id": 3,
-                    "params": {
-                      "name": "list_agents",
-                      "arguments": {}
-                    }
-                  }')
-
-                echo "list_agents response: $response"
-
-                # Validate test-mcp-agent is in response
-                if echo "$response" | jq -e '.result.content[]? | select(.text | contains("test-mcp-agent"))' > /dev/null; then
-                  echo "✅ test-mcp-agent discovered via MCP"
-                  exit 0
-                else
-                  echo "❌ test-mcp-agent not found in list_agents"
-                  exit 1
-                fi
-
-    - name: cleanup-test-resources
-      description: Remove test agent (kagent route managed by deployment)
-      try:
-        - script:
-            content: |
-                kubectl delete -n kagent sandboxagent test-mcp-agent --ignore-not-found
+                  -H "Accept: application/json, text/event-stream" \
+                  -d "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"id\":3,\"params\":{\"name\":\"invoke_agent_instance\",\"arguments\":{\"agent_instance_id\":\"${instance_id}\",\"message\":\"Say hi\"}}}")
+                echo "invoke response: $response"
+                # MCP → A2A gateway → atenet router → substrate actor → LLM → task
+                printf '%s\n' "$response" | grep '^data:' | sed 's/^data: //' | jq -e '
+                  .result.structuredContent
+                  | (.state == "TASK_STATE_COMPLETED")
+                  and (.text | contains("MCP validation OK"))' > /dev/null
+                echo "OK self-test instance completed a turn via MCP"

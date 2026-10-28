@@ -44,19 +44,23 @@ fi
 say "Checking prerequisites..."
 kctl -n "$GW_NS" get gateway "$GW_NAME" >/dev/null 2>&1 \
   || die "Gateway '${GW_NAME}' not found — run 'make create' first (or scripts/30-gateway.sh)."
-kctl -n "$KAGENT_NS" get crd modelconfigs.kagent.dev >/dev/null 2>&1 \
-  || die "kagent CRDs not found — deploy kagent first (make kagent-deploy or scripts/80-kagent.sh deploy)."
+# ModelConfig CRD — the API group was renamed (kagent.dev -> api.kagent.dev
+# in the v1alpha3 rewrite), so probe whichever the deployed kagent installed.
+MC_CRD="$(kctl get crd -o name 2>/dev/null \
+  | grep -E '/modelconfigs\.(api\.)?kagent\.dev$' | head -1 | cut -d/ -f2)"
+[[ -n "$MC_CRD" ]] \
+  || die "ModelConfig CRD not found — deploy kagent first (make kagent-deploy or scripts/80-kagent.sh deploy)."
 
-# ModelConfig apiVersion — upstream churns it (v1alpha2 was dropped in the v2
-# rewrite), so read the storage version off the installed CRD and normalize
-# every manifest to it instead of hardcoding.
-MC_API_VERSION="$(kctl get crd modelconfigs.kagent.dev \
+# ModelConfig apiVersion — upstream churns it (group renames, v1alpha2 was
+# dropped in the v2 rewrite), so read the storage version off the installed
+# CRD and normalize every manifest to it instead of hardcoding.
+MC_API_VERSION="$(kctl get crd "$MC_CRD" \
   -o jsonpath='{.spec.versions[?(@.storage==true)].name}')"
 [[ -n "$MC_API_VERSION" ]] \
-  || die "could not read the storage version of modelconfigs.kagent.dev"
+  || die "could not read the storage version of ${MC_CRD}"
 
-apply_modelconfigs() { # <manifest> — apply with the CRD's storage apiVersion
-  sed "s|apiVersion: kagent.dev/v1alpha[0-9]*|apiVersion: kagent.dev/${MC_API_VERSION}|" \
+apply_modelconfigs() { # <manifest> — apply with the CRD's group + storage version
+  sed -E "s|apiVersion: (api\.)?kagent\.dev/v1alpha[0-9]+|apiVersion: ${MC_CRD#modelconfigs.}/${MC_API_VERSION}|" \
     "$ROOT_DIR/manifests/$1" | kctl apply -f - >/dev/null
 }
 
@@ -125,12 +129,18 @@ done
 say "Applying kagent ModelConfigs..."
 apply_modelconfigs kagent-model-configs.yaml
 
+# Strata ModelConfig (Mac-hosted model via the strata-bridge Service). Applied
+# here so it exists even when 96-strata.sh ran BEFORE kagent was deployed —
+# its guarded apply self-skips until the CRD exists.
+[[ -f "$ROOT_DIR/manifests/strata-model-config.yaml" ]] \
+  && apply_modelconfigs strata-model-config.yaml
+
 # Removed configs — delete the stale ones so nothing lingers half-wired.
 kctl -n "$KAGENT_NS" delete modelconfig ark-model-config --ignore-not-found >/dev/null 2>&1
 kctl -n "$KAGENT_NS" delete modelconfig agw-cheap-model-config --ignore-not-found >/dev/null 2>&1
 
 # Wait for ModelConfigs to be accepted
-for mc in default-model-config agw-model-config; do
+for mc in default-model-config agw-model-config strata-model-config; do
   if kctl -n "$KAGENT_NS" get modelconfig "$mc" >/dev/null 2>&1; then
     for _ in $(seq 1 10); do
       st="$(kctl -n "$KAGENT_NS" get modelconfig "$mc" -o json \

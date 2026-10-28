@@ -11,6 +11,16 @@ DOMAIN="${DOMAIN:-internal}"
 MCP_ENDPOINT="https://kagent.${DOMAIN}/mcp"
 CERT_PATH="$ROOT_DIR/certs/rootCA.pem"
 
+# Stateless streamable-HTTP MCP: every call is a plain POST returning SSE.
+mcp_post() {
+  local payload="$1"
+  curl -s --cacert "$CERT_PATH" --max-time 180 \
+    -X POST "$MCP_ENDPOINT" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    -d "$payload" | grep '^data:' | sed 's/^data: //'
+}
+
 echo "🧪 Testing kagent MCP endpoint: $MCP_ENDPOINT"
 echo ""
 
@@ -34,62 +44,48 @@ echo ""
 
 # Test MCP tools/list
 echo "2️⃣ Testing MCP tools/list..."
-response=$(curl -s --cacert "$CERT_PATH" \
-  -X POST "$MCP_ENDPOINT" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "method": "tools/list",
-    "id": 1
-  }')
+response=$(mcp_post '{"jsonrpc":"2.0","method":"tools/list","id":1}')
+echo "   Tools found:"
+echo "$response" | jq -r '.result.tools[].name' | sed 's/^/     - /'
 
-echo "   Response: $response"
-
-if echo "$response" | jq -e '.result.tools[]? | select(.name == "list_agents")' > /dev/null; then
-  echo "   ✅ list_agents tool found"
-else
-  echo "   ❌ list_agents tool not found"
-  exit 1
-fi
-
-if echo "$response" | jq -e '.result.tools[]? | select(.name == "invoke_agent")' > /dev/null; then
-  echo "   ✅ invoke_agent tool found"
-else
-  echo "   ❌ invoke_agent tool not found"
-  exit 1
-fi
+for tool in list_agent_instances invoke_agent_instance; do
+  if echo "$response" | jq -e --arg t "$tool" '.result.tools[]? | select(.name == $t)' > /dev/null; then
+    echo "   ✅ $tool tool found"
+  else
+    echo "   ❌ $tool tool not found"
+    exit 1
+  fi
+done
 echo ""
 
-# Test list_agents tool
-echo "3️⃣ Testing list_agents tool call..."
-response=$(curl -s --cacert "$CERT_PATH" \
-  -X POST "$MCP_ENDPOINT" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "method": "tools/call",
-    "id": 2,
-    "params": {
-      "name": "list_agents",
-      "arguments": {}
-    }
-  }')
-
-echo "   Response: $response"
+# Test list_agent_instances tool
+echo "3️⃣ Testing list_agent_instances tool call..."
+response=$(mcp_post '{"jsonrpc":"2.0","method":"tools/call","id":2,"params":{"name":"list_agent_instances","arguments":{}}}')
 
 if echo "$response" | jq -e '.result' > /dev/null; then
-  echo "   ✅ list_agents call successful"
-  echo "   Available agents:"
-  echo "$response" | jq -r '.result.content[]?.text' 2>/dev/null || echo "   (No agents found)"
+  echo "   ✅ list_agent_instances call successful"
+  echo "   Ready instances (id — template via harness):"
+  echo "$response" | jq -r '.result.content[]?.text' | sed 's/^/     /'
 else
-  echo "   ❌ list_agents call failed"
+  echo "   ❌ list_agent_instances call failed"
   exit 1
 fi
 echo ""
 
 echo "🎉 MCP endpoint validation complete!"
 echo ""
-echo "📝 Configure your MCP client:"
-echo "   Claude Code:  claude mcp add --transport http kagent-mcp $MCP_ENDPOINT"
-echo "   Cursor IDE:    Add to MCP settings: {\"url\": \"$MCP_ENDPOINT\"}"
+cat <<EOF
+📝 Invoke an instance end to end (writes to the instance's history —
+   prefer a self-test instance over real agents):
+
+   instance_id="<id from the list above>"
+   curl -s --cacert "$CERT_PATH" -X POST "$MCP_ENDPOINT" \\
+     -H 'Content-Type: application/json' \\
+     -H 'Accept: application/json, text/event-stream' \\
+     -d "{\\"jsonrpc\\":\\"2.0\\",\\"method\\":\\"tools/call\\",\\"id\\":3,\\"params\\":{\\"name\\":\\"invoke_agent_instance\\",\\"arguments\\":{\\"agent_instance_id\\":\\"\$instance_id\\",\\"message\\":\\"Say hi\\"}}}"
+
+📝 Configure your MCP client:
+   Claude Code:  claude mcp add --transport http kagent-mcp $MCP_ENDPOINT
+   Cursor IDE:    Add to MCP settings: {"url": "$MCP_ENDPOINT"}
+EOF
 echo ""

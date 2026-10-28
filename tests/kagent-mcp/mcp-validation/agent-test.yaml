@@ -1,11 +1,15 @@
 apiVersion: kagent.dev/v1alpha3
-kind: SandboxAgent
+kind: AgentTemplate
 metadata:
-  name: test-mcp-agent
+  name: mcp-e2e-selftest
   namespace: kagent
+  labels:
+    # The `kagent` Harness admits only templates carrying this label.
+    kagent.dev/sample: kagent
 spec:
-  type: Declarative
-  description: "Test agent for MCP validation"
-  declarative:
-    modelConfig: default-model-config
-    systemMessage: "You are a helpful test agent. Respond with 'MCP test successful' when asked."
+  description: "Self-test agent for the MCP gateway e2e validation"
+  modelConfig:
+    name: default-model-config
+  systemPrompt: |
+    You are a self-test agent. No matter what the user says, reply with
+    exactly: MCP validation OK

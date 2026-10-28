@@ -17,6 +17,18 @@ containerdConfigPatches:
     config_path = "/etc/containerd/certs.d"
 networking:
   apiServerAddress: "127.0.0.1"
+# Substrate WorkerPools project pod identities and trust bundles into the
+# ateom workers — k8s 1.35 serves these as certificates.k8s.io/v1beta1, which
+# needs the alpha gates on apiserver AND kubelet (kind applies root-level
+# featureGates to both) plus the runtimeConfig override. Mirrors
+# scripts/kind/kind-config.yaml in the kagent repo.
+featureGates:
+  ClusterTrustBundle: true
+  ClusterTrustBundleProjection: true
+  PodCertificateRequest: true
+runtimeConfig:
+  "api/alpha": "false"
+  "certificates.k8s.io/v1beta1": "true"
 nodes:
 - role: control-plane
   kubeadmConfigPatches:

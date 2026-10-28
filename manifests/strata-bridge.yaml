@@ -1,0 +1,34 @@
+# Strata model-service bridge — exposes the Mac-hosted Strata engine
+# (strata launch, 127.0.0.1:8080) at https://strata.internal through the
+# AgentGateway.
+#
+# Selector-less Service + annotated for the kind-infra.dev/host registration
+# mechanism (scripts/60-register.sh sync creates the HTTPRoute from these
+# annotations; `make sync` re-converges and prunes).
+#
+# The EndpointSlice is NOT in this file: its IP (the Mac, as seen from inside
+# Docker Desktop) is discovered and written by scripts/96-strata.sh — same
+# split as manifests/hub-bridge.yaml + 95-hub.sh and registry-service.yaml +
+# 50-registry.sh.
+#
+# Applied by: scripts/96-strata.sh (part of `make all` / `make update`).
+# Requires:   the Strata engine serving on the host (strata launch) and
+#             "allowed_hosts" with strata.internal in its run config
+#             (~/workspace/Strata/strata-q2_0.json — see README § Strata).
+apiVersion: v1
+kind: Service
+metadata:
+  name: strata-bridge
+  namespace: agentgateway-system
+  labels:
+    app.kubernetes.io/name: strata-bridge
+    app.kubernetes.io/part-of: strata
+    app.kubernetes.io/managed-by: kind-infra
+  annotations:
+    kind-infra.dev/host: "strata"
+    kind-infra.dev/port: "8080"
+spec:
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

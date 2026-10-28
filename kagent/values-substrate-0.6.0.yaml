@@ -1,0 +1,62 @@
+ateApi:
+  extraArgs: []
+ateApiServerEnvVarsConfigMap: ate-api-server-envvars
+atelet:
+  extraArgs:
+  - --localhost-registry-replacement=kind-registry.default.svc:5000
+  extraEnv: []
+  gcpAuthForImagePulls: false
+  storageBackend: s3
+createNamespace: false
+credentialProvider:
+  namespacePolicies:
+  - allowedNamespaces:
+    - kagent
+    atespace: kagent
+global:
+  imagePullPolicy: ""
+  imagePullSecrets: []
+  imageRegistry: ""
+image:
+  registry: ghcr.io
+  repository: kagent-dev/substrate
+  tag: ""
+imagePullSecrets: []
+images:
+  # substrate-custom agentgateway build (the generic upstream agentgateway
+  # cannot parse v0.6.0 ResumeActor responses)
+  agentgateway: ghcr.io/kagent-dev/substrate/agentgateway:cd65181fd52e@sha256:ebebf5a7fa2a54fb524ccce1f6f74ee6e7ef22d661f22e212717fd0a68dadb33
+  awsCli: amazon/aws-cli:2.17.0@sha256:643507c10ada7964ca6157b3d799f030b90577643da9955d319a77399ed80d73
+  busybox: busybox:1.36
+  postgres: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+  rustfs: rustfs/rustfs:1.0.0-beta.3@sha256:378642b05b7dcb4849fb77ebe6aca4ced1c3f66e7e504247df95a5c9018d3358
+otel:
+  endpoint: ""
+  logs:
+    enabled: true
+    endpoint: ""
+  metrics:
+    enabled: true
+    endpoint: ""
+  traces:
+    enabled: true
+    endpoint: ""
+    samplingRatio: 0.01
+postgres:
+  connectionString: ""
+  enabled: true
+  resources:
+    limits:
+      cpu: "2"
+      memory: 2Gi
+    requests:
+      cpu: "1"
+      memory: 1Gi
+  schema: substrate
+  storageSize: 1Gi
+rustfs:
+  accessKey: rustfsadmin
+  bucket: ate-snapshots
+  enabled: true
+  secretKey: rustfsadmin
+  storageSize: 1Gi

@@ -1,0 +1,31 @@
+# kagent ModelConfig — the local Strata model (Qwen3.8-Flash-Next Q2_0 on
+# this Mac, bridged at strata.internal) as a provider for kagent agents.
+#
+# Not wired to any agent by default — opt in per agent (or per
+# context.compaction.summarizer), same as the agw-model-config in
+# kagent-model-configs.yaml. The API key is a placeholder: Strata serves
+# locally without one and AgentGateway/in-cluster clients need no key.
+#
+# Anthropic-compatible endpoint (Strata serves both APIs on one port), so
+# provider is Anthropic with the gateway's in-cluster DNS name — faster and
+# independent of the host's 443 listener. Restart the kagent controller
+# (make kagent-delete && make kagent-deploy) is NOT needed: ModelConfigs
+# reconcile live.
+#
+# Applied by: scripts/96-strata.sh (part of `make all` / `make update`).
+# Requires:   the Strata engine serving on the Mac (strata launch).
+apiVersion: api.kagent.dev/v1alpha3
+kind: ModelConfig
+metadata:
+  name: strata-model-config
+  namespace: kagent
+  labels:
+    app.kubernetes.io/part-of: strata
+    app.kubernetes.io/managed-by: kind-infra
+spec:
+  provider: Anthropic
+  model: qwen3.8-flash-next-q2_0
+  apiKeySecret: kagent-anthropic
+  apiKeySecretKey: ANTHROPIC_API_KEY
+  anthropic:
+    baseUrl: http://strata-bridge.agentgateway-system.svc.cluster.local:8080

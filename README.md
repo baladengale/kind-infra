@@ -121,6 +121,8 @@ spec:
 | `make all` | Full bootstrap: `create` + kagent + personal site, in order (idempotent) |
 | `make create` | Cluster + registry + AgentGateway + registry route (DNS is one-time, see below) |
 | `make update` | Re-apply addons on the existing cluster (idempotent; picks up version bumps) |
+| `make recover` | Heal the stack after a host/Docker restart: starts Docker + containers, re-syncs registry Endpoints and substrate worker registrations, probes routes |
+| `make autostart` / `make autostart-remove` | Install/remove the login launchd agent that runs `recover` automatically, so the stack is up right after you sign in (log: `~/Library/Logs/kind-infra-recover.log`) |
 | `make upgrade` | Recreate the cluster with the current `KIND_IMAGE_VERSION` (destructive) |
 | `make delete` | Delete cluster and registry (DNS zone stays installed) |
 | `make delete-cluster` | Delete only the cluster |
@@ -196,6 +198,7 @@ manifests/                plain YAML, no variables — kubectl apply -f works di
   registry-service.yaml   registry Service (Endpoints are dynamic — 50-registry.sh)
   registry-route.yaml     kind-registry.internal HTTPRoute
   local-registry-hosting.yaml  registry discovery ConfigMap
+  strata-bridge.yaml      Strata engine bridge Service (EndpointSlice dynamic — 96-strata.sh)
 scripts/
   00-up.sh                one-command bootstrap behind `make all`
   common.sh               shared vars + helpers (apply_manifest, cert refresh)
@@ -209,6 +212,7 @@ scripts/
   80-kagent.sh            kagent deployment wrapper (see below)
   85-substrate.sh         Agent Substrate platform wrapper (install/status/uninstall)
   90-site.sh              internal website (../baladengale.github.io) deploy
+  96-strata.sh            Strata model-service bridge (Mac-hosted engine -> strata.internal)
 kagent/                   wrapper defaults for deploying ../kagent
   values.yaml             customization defaults (agents off, etc.)
   values-substrate.yaml   substrate mode: controller wiring + default WorkerPool
@@ -361,6 +365,48 @@ Re-run after any content change — the tag is always `:latest`, so the script
 restarts the rollout to pick it up. The route (`deploy/route.yaml` in the
 site repo) is plain YAML on the shared Gateway, identical to what
 `make sync` would generate from the Service annotations.
+
+## The local model service (Strata)
+
+[Strata](../Strata) serves the Qwen3.8-Flash-Next model on this Mac
+(`strata launch` — the Metal engine cannot run inside a container), answering
+OpenAI- and Anthropic-compatible APIs on `127.0.0.1:8080`. The cluster exposes
+it as a standard model service at **https://strata.internal** through the same
+host-bridge pattern as the Hub: selector-less Service + EndpointSlice pointing
+at the Mac, HTTPRoute registered from the Service annotations
+(`scripts/96-strata.sh`, part of `make all` / `make update`).
+
+Prerequisites (one-time):
+
+1. The engine serving: `strata launch --model q2_0 --yes --no-tui`
+   (check: `strata launch --status`).
+2. The engine refuses unknown Host headers (DNS-rebinding protection), so the
+   run config needs the bridge names allow-listed — in
+   `~/workspace/Strata/strata-q2_0.json`:
+
+   ```json
+   "allowed_hosts": ["strata.internal", "host.docker.internal",
+                     "strata-bridge.agentgateway-system.svc.cluster.local"],
+   ```
+
+   then `strata launch --stop && strata launch --model q2_0 --yes --no-tui`.
+   (Serving without an API key is a local-only default; to add one, restart
+   with `--new-key` — clients then send `Authorization: Bearer <key>`.)
+
+Client wiring:
+
+| App | Setting |
+| --- | --- |
+| Any OpenAI-compatible app (VSCode extensions, agents) | base URL `https://strata.internal/v1`, any model name, any key |
+| Claude Code | `ANTHROPIC_BASE_URL=https://strata.internal` (no `/v1`), any `ANTHROPIC_AUTH_TOKEN` |
+| Anthropic API | `https://strata.internal/v1/messages` |
+| kagent agents | `ModelConfig strata-model-config` (in `kagent`) — opt in per agent; goes in-cluster via the bridge Service |
+| Thinking level | `"reasoning_effort": "none" \| "low" \| "medium" \| "high"` |
+
+Upgrades: `strata update` on the Mac moves the engine (the route is
+unaffected); `make update` re-applies the bridge; `make upgrade` recreates the
+cluster and `make all` brings the route back. The EndpointSlice IP is
+re-discovered on every run, so Docker Desktop IP changes heal themselves.
 
 ## End-to-end tests (chainsaw)
 

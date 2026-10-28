@@ -1,0 +1,31 @@
+# kind-infra overlay for kagent 1.0.0-alpha17, passed via `kagent install`
+# (config: install.kagent.valuesFiles). Replaces the pre-1.0 values.yaml
+# overlay: bundled agents and the kmcp subchart no longer exist as chart
+# values — agents are Agent CRs now (see kind/kagent/samples/).
+global:
+  # Air-gap knob: every chart image (controller, ui, built-in harness defaults,
+  # sandbox guest, kagent-tools) pulls from the local registry mirror.
+  # Mirrored per release: controller, ui, golang-adk, claude-harness,
+  # codex-harness, sandbox-guest (tag 1.0.0-alpha17, no v prefix).
+  imageRegistry: localhost:5001
+
+substrateWorkerPool:
+  create: true
+  name: kagent-default
+  replicas: 2
+  sandboxClass: gvisor
+  # Image renamed ateom-gvisor -> ateworker-gvisor in substrate 0.6.0.
+  workerImage: localhost:5001/kagent-dev/substrate/ateworker-gvisor:v0.6.0
+
+# Model provider configuration — GLM flash (Z.AI coding plan) via the
+# Anthropic-compatible endpoint. providers.default + the API key are --set by
+# `kagent install` from the CLI config (defaultModelProvider: Anthropic) and
+# ANTHROPIC_API_KEY (the Z.AI token from ~/.balarc_zai when installing).
+providers:
+  anthropic:
+    provider: Anthropic
+    model: glm-5.3-flash
+    apiKeySecretRef: kagent-anthropic
+    apiKeySecretKey: ANTHROPIC_API_KEY
+    config:
+      baseUrl: https://api.z.ai/api/anthropic
