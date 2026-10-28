@@ -413,6 +413,14 @@ cmd_install() {
     --version "$SUBSTRATE_VERSION" --namespace "$PODCERT_NS" --create-namespace \
     --kube-context "$KUBE_CONTEXT" --timeout 5m >/dev/null
 
+  # bootstrap_pools writes CA/JWT pools into both namespaces; ate-system only
+  # comes into existence with the chart installs below, and helm --wait on
+  # the podcert release above would deadlock on its not-yet-mounted pools —
+  # so create both namespaces up front.
+  for ns in "$PODCERT_NS" "$SUBSTRATE_NS"; do
+    kctl create namespace "$ns" --dry-run=client -o yaml | kctl apply -f - >/dev/null
+  done
+
   bootstrap_pools
 
   say "Installing substrate-crds ${SUBSTRATE_VERSION} (upstream OCI chart)..."
